@@ -1,5 +1,10 @@
 import streamlit as st
-import numpy as np
+# --- ここからパスワード機能 ---
+password = st.text_input("パスワードを入力してください", type="password")
+if password != "cft":  # ← "1234" を好きなパスワードに変更してください
+    st.warning("正しいパスワードを入力すると計算ツールが表示されます。")
+    st.stop()
+# --- ここまで ---import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import brentq
 import math
