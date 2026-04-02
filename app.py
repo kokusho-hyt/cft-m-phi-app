@@ -1,10 +1,4 @@
 import streamlit as st
-# --- ここからパスワード機能 ---
-password = st.text_input("パスワードを入力してください", type="password")
-if password != "cft":  # ← "1234" を好きなパスワードに変更してください
-    st.warning("正しいパスワードを入力すると計算ツールが表示されます。")
-    st.stop()
-# --- ここまで ---
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import brentq
@@ -21,12 +15,18 @@ def get_confined_concrete_props(fck, fsy, D, t):
     Esec = fcc / ecc
     Ec = 4700 * np.sqrt(fck)
     r = Ec / (Ec - Esec)
-    return fcc, ecc, r, Ec
+    
+    # コンクリート強度の低減係数 kc
+    kc = 1.0 - 0.003 * fck
+    if kc > 0.85:
+        kc = 0.85
+        
+    return fcc, ecc, r, Ec, kc
 
-def sigma_concrete(eps, fcc, ecc, r):
+def sigma_concrete(eps, fcc, ecc, r, kc):
     if eps <= 0: return 0.0 
     x = eps / ecc
-    return (fcc * x * r) / (r - 1 + x**r)
+    return kc * (fcc * x * r) / (r - 1 + x**r)
 
 def sigma_steel(eps, fsy, Es=200000.0):
     sigma = Es * eps
@@ -60,7 +60,7 @@ def generate_fibers(D, t, num_layers=100):
 # ==========================================
 # 3. 断面解析エンジン
 # ==========================================
-def analyze_section(phi, target_N, fibers, fsy, fcc, ecc, r, Es=200000.0):
+def analyze_section(phi, target_N, fibers, fsy, fcc, ecc, r, kc, Es=200000.0):
     def calc_N_error(eps0):
         N_int = 0.0
         for f in fibers:
@@ -68,7 +68,7 @@ def analyze_section(phi, target_N, fibers, fsy, fcc, ecc, r, Es=200000.0):
             if f['mat'] == 'steel':
                 N_int += sigma_steel(eps_i, fsy, Es) * f['A']
             else:
-                N_int += sigma_concrete(eps_i, fcc, ecc, r) * f['A']
+                N_int += sigma_concrete(eps_i, fcc, ecc, r, kc) * f['A']
         return N_int - target_N
 
     try:
@@ -82,21 +82,24 @@ def analyze_section(phi, target_N, fibers, fsy, fcc, ecc, r, Es=200000.0):
         if f['mat'] == 'steel':
             sigma = sigma_steel(eps_i, fsy, Es)
         else:
-            sigma = sigma_concrete(eps_i, fcc, ecc, r)
+            sigma = sigma_concrete(eps_i, fcc, ecc, r, kc)
         M_int += sigma * f['A'] * f['y'] * 1e-6
     return eps0_sol, M_int
 
-def find_points_for_N(target_N_N, fibers, fsy, fcc, ecc, r, D, t, Es=200000.0):
+def find_points_for_N(target_N_N, fibers, fsy, fcc, ecc, r, kc, D, t, Es=200000.0):
     eps_sy = fsy / Es
     y_45deg_tension = - (D/2) * math.cos(math.radians(45))
     y_conc_comp = (D/2) - t
+    y_steel_tens_edge = - (D/2)
+    
+    eps_su = max(5.0 * eps_sy, 0.01)
     
     phi_max = 0.05 / D 
     phis = np.linspace(0, phi_max, 150)
     
     Y_pt, M_pt = None, None
     for phi in phis:
-        eps0, M = analyze_section(phi, target_N_N, fibers, fsy, fcc, ecc, r, Es)
+        eps0, M = analyze_section(phi, target_N_N, fibers, fsy, fcc, ecc, r, kc, Es)
         if eps0 is None: continue
         
         eps_45deg = eps0 + phi * y_45deg_tension
@@ -104,7 +107,9 @@ def find_points_for_N(target_N_N, fibers, fsy, fcc, ecc, r, D, t, Es=200000.0):
             Y_pt = (phi, M)
             
         eps_conc_comp = eps0 + phi * y_conc_comp
-        if M_pt is None and eps_conc_comp >= ecc:
+        eps_tens_edge = eps0 + phi * y_steel_tens_edge
+        
+        if M_pt is None and (eps_conc_comp >= ecc or abs(eps_tens_edge) >= eps_su):
             M_pt = (phi, M)
             
         if Y_pt and M_pt: break
@@ -113,13 +118,13 @@ def find_points_for_N(target_N_N, fibers, fsy, fcc, ecc, r, D, t, Es=200000.0):
     if M_pt is None: M_pt = (0.00001, 0.0)
     return Y_pt, M_pt
 
-def calc_m_phi_curve(target_N_N, fibers, fsy, fcc, ecc, r, D, t, Es=200000.0):
+def calc_m_phi_curve(target_N_N, fibers, fsy, fcc, ecc, r, kc, D, t, Es=200000.0):
     phi_max = 0.05 / D
     phis = np.linspace(0, phi_max, 100)
     moments = []
     valid_phis = []
     for phi in phis:
-        eps0, M = analyze_section(phi, target_N_N, fibers, fsy, fcc, ecc, r, Es)
+        eps0, M = analyze_section(phi, target_N_N, fibers, fsy, fcc, ecc, r, kc, Es)
         if eps0 is not None:
             moments.append(M)
             valid_phis.append(phi)
@@ -185,30 +190,27 @@ def create_flip_cards(axf_list, results_comp, results_tens):
 # 5. Streamlit UI
 # ==========================================
 st.set_page_config(page_title="CFT M-φ FLIP", layout="wide")
-st.title("CFT構造 M-φ特性 & FLIP入力データ自動生成")
+st.title(r"CFT構造 M-$\phi$特性 & FLIP入力データ自動生成")
 
 st.sidebar.header("入力条件")
 D = st.sidebar.number_input("鋼管外径 D (mm)", value=1500.0, step=10.0)
 t = st.sidebar.number_input("鋼管肉厚 t (mm)", value=20.0, step=1.0)
 fsy = st.sidebar.number_input("鋼材降伏強度 fsy (N/mm2)", value=345.0, step=5.0)
 fck = st.sidebar.number_input("コンクリート設計基準強度 fck (N/mm2)", value=30.0, step=1.0)
-
-# 常時軸力の入力欄を追加 (デフォルト: 3000 kN 程度に設定)
 target_N_kN = st.sidebar.number_input("常時作用軸力 N (kN) [圧縮:+ / 引張:-]", value=3000.0, step=100.0)
 
 if st.sidebar.button("全軸力でM-φ解析実行"):
     with st.spinner("各軸力レベルで反復解析中... (数秒かかります)"):
         Es = 200000.0
-        fcc, ecc, r, Ec = get_confined_concrete_props(fck, fsy, D, t)
+        fcc, ecc, r, Ec, kc = get_confined_concrete_props(fck, fsy, D, t)
         fibers = generate_fibers(D, t, num_layers=100)
         
         A_steel = sum([f['A'] for f in fibers if f['mat'] == 'steel'])
         A_conc = sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
         
-        Nyc_kN = (A_steel * fsy + A_conc * fcc) / 1000.0
+        Nyc_kN = (A_steel * fsy + kc * A_conc * fcc) / 1000.0
         Nyt_kN = - (A_steel * fsy) / 1000.0
         
-        # ユーザーが入力した常時軸力が耐力を超えていないかチェック
         if target_N_kN > Nyc_kN * 0.95 or target_N_kN < Nyt_kN * 0.95:
             st.error(f"入力された常時軸力 ({target_N_kN} kN) が、断面の純耐力範囲を超えています。計算可能な範囲に修正してください。")
             st.stop()
@@ -220,25 +222,29 @@ if st.sidebar.button("全軸力でM-φ解析実行"):
         
         for axf in axf_list:
             N_kN = axf * Nyc_kN
-            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsy, fcc, ecc, r, D, t)
+            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsy, fcc, ecc, r, kc, D, t)
             results_comp.append([N_kN, Y_pt[1], Y_pt[0], M_pt[1], M_pt[0]])
             
         for axf in axf_list:
             N_kN = axf * Nyt_kN
-            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsy, fcc, ecc, r, D, t)
+            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsy, fcc, ecc, r, kc, D, t)
             results_tens.append([N_kN, Y_pt[1], Y_pt[0], M_pt[1], M_pt[0]])
 
         # ------------------------------------
         # グラフ1: 入力された常時軸力でのM-φ曲線
         # ------------------------------------
         target_N_N = target_N_kN * 1000.0
-        phis_target, M_target = calc_m_phi_curve(target_N_N, fibers, fsy, fcc, ecc, r, D, t, Es)
-        Y_target, M_point_target = find_points_for_N(target_N_N, fibers, fsy, fcc, ecc, r, D, t, Es)
+        phis_target, M_target = calc_m_phi_curve(target_N_N, fibers, fsy, fcc, ecc, r, kc, D, t, Es)
+        Y_target, M_point_target = find_points_for_N(target_N_N, fibers, fsy, fcc, ecc, r, kc, D, t, Es)
+        
+        # 剛性の算出（単位を kN・m2 に変換）
+        EI1 = (Y_target[1] / (Y_target[0] * 1000.0)) if Y_target[0] > 0.00001 else 0.0
+        d_phi = (M_point_target[0] - Y_target[0]) * 1000.0
+        EI2 = ((M_point_target[1] - Y_target[1]) / d_phi) if d_phi > 1e-5 else 0.0
         
         fig1, ax1 = plt.subplots(figsize=(8, 5))
         ax1.plot(phis_target, M_target, 'k-', label=f'N = {target_N_kN:.0f} kN')
         
-        # ダミー値(0.00001)以外であればY点、M点をプロット
         if Y_target[0] > 0.00001:
             ax1.plot(Y_target[0], Y_target[1], 'bo', markersize=8, label=f'Y Point ($M_y$={Y_target[1]:.0f})')
         if M_point_target[0] > 0.00001:
@@ -264,7 +270,6 @@ if st.sidebar.button("全軸力でM-φ解析実行"):
         ax2.plot([-x for x in My_vals], N_vals, 'bo-')
         ax2.plot([-x for x in Mm_vals], N_vals, 'ro-')
         
-        # 入力した常時軸力のラインを点線で表示
         ax2.axhline(target_N_kN, color='gray', linestyle='--', label='Target N')
         
         ax2.set_xlabel(r"Bending Moment $M$ (kN・m)")
@@ -281,8 +286,13 @@ if st.sidebar.button("全軸力でM-φ解析実行"):
         # UIレイアウト
         col1, col2 = st.columns([1.2, 1])
         with col1:
-            st.subheader(f"M-φ 曲線 (常時軸力 N={target_N_kN:.0f}kN)")
+            st.subheader(fr"M-$\phi$ 曲線 (常時軸力 N={target_N_kN:.0f}kN)")
             st.pyplot(fig1)
+            
+            # 各段階の曲げ剛性出力
+            st.markdown(f"**第1勾配 ($EI_1$)**: {EI1:,.0f} kN・m²")
+            st.markdown(f"**第2勾配 ($EI_2$)**: {EI2:,.0f} kN・m²")
+            
             st.subheader("N-M 相関図")
             st.pyplot(fig2)
         with col2:
