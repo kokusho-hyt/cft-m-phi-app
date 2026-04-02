@@ -8,20 +8,31 @@ import math
 # セキュリティ設定
 # ==========================================
 password = st.text_input("パスワードを入力してください", type="password")
-if password != "cft":  # 実運用に当っては任意のパスワードに変更する必要がある
+if password != "1234":  # 実運用に当っては任意のパスワードに変更する必要がある
     st.warning("正しいパスワードを入力すると計算ツールが表示されます。")
     st.stop()
 
 # ==========================================
 # 1. 材料モデル関数
 # ==========================================
-def get_confined_concrete_props(fck, fsy, D, t):
+def get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s):
+    # 設計強度の算定
+    fcd = fck / gamma_c
+    fsyd = fsy / gamma_s
+    
     alpha = 1.0
-    f1 = 2 * t * alpha * fsy / (D - 2 * t)
-    fcc = fck * (2.254 * np.sqrt(1 + 7.94 * f1 / fck) - 2 * f1 / fck - 1.254)
-    ecc = 0.002 * (1 + 5 * (fcc / fck - 1))
+    # 鋼管による拘束応力度（設計強度を使用）
+    f1 = 2 * t * alpha * fsyd / (D - 2 * t)
+    
+    # 拘束コンクリートの最大圧縮強度
+    fcc = fcd * (2.254 * np.sqrt(1 + 7.94 * f1 / fck) - 2 * f1 / fck - 1.254)
+    
+    # 最大圧縮強度時のコンクリート圧縮ひずみ
+    ecc = 0.002 * (1 + 5 * (fcc / fcd - 1))
+    
+    # 割線弾性係数および弾性係数に関する比
+    Ec = 4700 * np.sqrt(fck)  # 初期弾性係数は特性値ベースとする
     Esec = fcc / ecc
-    Ec = 4700 * np.sqrt(fck)
     r = Ec / (Ec - Esec)
     
     # コンクリート強度の低減係数 kc
@@ -29,17 +40,18 @@ def get_confined_concrete_props(fck, fsy, D, t):
     if kc > 0.85:
         kc = 0.85
         
-    return fcc, ecc, r, Ec, kc
+    return fcc, ecc, r, Ec, kc, fcd, fsyd
 
 def sigma_concrete(eps, fcc, ecc, r, kc):
     if eps <= 0: return 0.0 
     x = eps / ecc
     return kc * (fcc * x * r) / (r - 1 + x**r)
 
-def sigma_steel(eps, fsy, Es=200000.0):
+def sigma_steel(eps, fsyd, Es=200000.0):
+    # 鋼管の応力上限値に設計降伏強度(fsyd)を使用
     sigma = Es * eps
-    if sigma > fsy: return fsy
-    elif sigma < -fsy: return -fsy
+    if sigma > fsyd: return fsyd
+    elif sigma < -fsyd: return -fsyd
     return sigma
 
 # ==========================================
@@ -68,13 +80,13 @@ def generate_fibers(D, t, num_layers=100):
 # ==========================================
 # 3. 断面解析エンジン
 # ==========================================
-def analyze_section(phi, target_N, fibers, fsy, fcc, ecc, r, kc, Es=200000.0):
+def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, kc, Es=200000.0):
     def calc_N_error(eps0):
         N_int = 0.0
         for f in fibers:
             eps_i = eps0 + phi * f['y']
             if f['mat'] == 'steel':
-                N_int += sigma_steel(eps_i, fsy, Es) * f['A']
+                N_int += sigma_steel(eps_i, fsyd, Es) * f['A']
             else:
                 N_int += sigma_concrete(eps_i, fcc, ecc, r, kc) * f['A']
         return N_int - target_N
@@ -88,30 +100,30 @@ def analyze_section(phi, target_N, fibers, fsy, fcc, ecc, r, kc, Es=200000.0):
     for f in fibers:
         eps_i = eps0_sol + phi * f['y']
         if f['mat'] == 'steel':
-            sigma = sigma_steel(eps_i, fsy, Es)
+            sigma = sigma_steel(eps_i, fsyd, Es)
         else:
             sigma = sigma_concrete(eps_i, fcc, ecc, r, kc)
         M_int += sigma * f['A'] * f['y'] * 1e-6
     return eps0_sol, M_int
 
-def find_points_for_N(target_N_N, fibers, fsy, fcc, ecc, r, kc, D, t, Es=200000.0):
-    eps_sy = fsy / Es
+def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es=200000.0):
+    eps_syd = fsyd / Es
     y_45deg_tension = - (D/2) * math.cos(math.radians(45))
     y_conc_comp = (D/2) - t
     y_steel_tens_edge = - (D/2)
     
-    eps_su = max(5.0 * eps_sy, 0.01)
+    eps_su = max(5.0 * eps_syd, 0.01)
     
     phi_max = 0.05 / D 
     phis = np.linspace(0, phi_max, 150)
     
     Y_pt, M_pt = None, None
     for phi in phis:
-        eps0, M = analyze_section(phi, target_N_N, fibers, fsy, fcc, ecc, r, kc, Es)
+        eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, kc, Es)
         if eps0 is None: continue
         
         eps_45deg = eps0 + phi * y_45deg_tension
-        if Y_pt is None and abs(eps_45deg) >= eps_sy:
+        if Y_pt is None and abs(eps_45deg) >= eps_syd:
             Y_pt = (phi, M)
             
         eps_conc_comp = eps0 + phi * y_conc_comp
@@ -126,13 +138,13 @@ def find_points_for_N(target_N_N, fibers, fsy, fcc, ecc, r, kc, D, t, Es=200000.
     if M_pt is None: M_pt = (0.00001, 0.0)
     return Y_pt, M_pt
 
-def calc_m_phi_curve(target_N_N, fibers, fsy, fcc, ecc, r, kc, D, t, Es=200000.0):
+def calc_m_phi_curve(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es=200000.0):
     phi_max = 0.05 / D
     phis = np.linspace(0, phi_max, 100)
     moments = []
     valid_phis = []
     for phi in phis:
-        eps0, M = analyze_section(phi, target_N_N, fibers, fsy, fcc, ecc, r, kc, Es)
+        eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, kc, Es)
         if eps0 is not None:
             moments.append(M)
             valid_phis.append(phi)
@@ -203,21 +215,23 @@ st.title(r"CFT構造 M-$\phi$特性 & FLIP入力データ自動生成")
 st.sidebar.header("入力条件")
 D = st.sidebar.number_input("鋼管外径 D (mm)", value=1500.0, step=10.0)
 t = st.sidebar.number_input("鋼管肉厚 t (mm)", value=20.0, step=1.0)
-fsy = st.sidebar.number_input("鋼材降伏強度 fsy (N/mm2)", value=345.0, step=5.0)
+fsy = st.sidebar.number_input("鋼材降伏強度特性値 fsy (N/mm2)", value=345.0, step=5.0)
 fck = st.sidebar.number_input("コンクリート設計基準強度 fck (N/mm2)", value=30.0, step=1.0)
+gamma_s = st.sidebar.number_input("鋼材の材料係数 γs", value=1.05, step=0.01)
+gamma_c = st.sidebar.number_input("コンクリートの材料係数 γc", value=1.30, step=0.01)
 target_N_kN = st.sidebar.number_input("常時作用軸力 N (kN) [圧縮:+ / 引張:-]", value=3000.0, step=100.0)
 
 if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
     with st.spinner("各軸力レベルで反復解析中... (数秒かかります)"):
         Es = 200000.0
-        fcc, ecc, r, Ec, kc = get_confined_concrete_props(fck, fsy, D, t)
+        fcc, ecc, r, Ec, kc, fcd, fsyd = get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s)
         fibers = generate_fibers(D, t, num_layers=100)
         
         A_steel = sum([f['A'] for f in fibers if f['mat'] == 'steel'])
         A_conc = sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
         
-        Nyc_kN = (A_steel * fsy + kc * A_conc * fcc) / 1000.0
-        Nyt_kN = - (A_steel * fsy) / 1000.0
+        Nyc_kN = (A_steel * fsyd + kc * A_conc * fcc) / 1000.0
+        Nyt_kN = - (A_steel * fsyd) / 1000.0
         
         if target_N_kN > Nyc_kN * 0.95 or target_N_kN < Nyt_kN * 0.95:
             st.error(f"入力された常時軸力 ({target_N_kN} kN) が、断面の純耐力範囲を超えています。計算可能な範囲に修正してください。")
@@ -230,20 +244,20 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         
         for axf in axf_list:
             N_kN = axf * Nyc_kN
-            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsy, fcc, ecc, r, kc, D, t)
+            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t)
             results_comp.append([N_kN, Y_pt[1], Y_pt[0], M_pt[1], M_pt[0]])
             
         for axf in axf_list:
             N_kN = axf * Nyt_kN
-            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsy, fcc, ecc, r, kc, D, t)
+            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t)
             results_tens.append([N_kN, Y_pt[1], Y_pt[0], M_pt[1], M_pt[0]])
 
         # ------------------------------------
         # グラフ1: 入力された常時軸力でのM-φ曲線
         # ------------------------------------
         target_N_N = target_N_kN * 1000.0
-        phis_target, M_target = calc_m_phi_curve(target_N_N, fibers, fsy, fcc, ecc, r, kc, D, t, Es)
-        Y_target, M_point_target = find_points_for_N(target_N_N, fibers, fsy, fcc, ecc, r, kc, D, t, Es)
+        phis_target, M_target = calc_m_phi_curve(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
+        Y_target, M_point_target = find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
         
         # 曲げ剛性の算出（曲率の微小化に伴うゼロ割りを回避）
         EI1 = (Y_target[1] / (Y_target[0] * 1000.0)) if (Y_target[1] > 0.0 and Y_target[0] > 1e-9) else 0.0
