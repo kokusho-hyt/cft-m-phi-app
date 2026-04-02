@@ -8,7 +8,7 @@ import math
 # セキュリティ設定
 # ==========================================
 password = st.text_input("パスワードを入力してください", type="password")
-if password != "cft":  # 実運用に当っては任意のパスワードに変更する必要がある
+if password != "cft":
     st.warning("正しいパスワードを入力すると計算ツールが表示されます。")
     st.stop()
 
@@ -215,10 +215,11 @@ st.title(r"CFT構造 M-$\phi$特性 & FLIP入力データ自動生成")
 st.sidebar.header("入力条件")
 D = st.sidebar.number_input("鋼管外径 D (mm)", value=1500.0, step=10.0)
 t = st.sidebar.number_input("鋼管肉厚 t (mm)", value=20.0, step=1.0)
-fsy = st.sidebar.number_input("鋼材降伏強度特性値 fsy (N/mm2)", value=345.0, step=5.0)
-fck = st.sidebar.number_input("コンクリート設計基準強度 fck (N/mm2)", value=30.0, step=1.0)
+fsy = st.sidebar.number_input("鋼材降伏強度特性値 fsy (N/mm2)", value=315.0, step=5.0)
+fck = st.sidebar.number_input("コンクリート設計基準強度 fck (N/mm2)", value=18.0, step=1.0)
 gamma_s = st.sidebar.number_input("鋼材の材料係数 γs", value=1.05, step=0.01)
 gamma_c = st.sidebar.number_input("コンクリートの材料係数 γc", value=1.30, step=0.01)
+gamma_b = st.sidebar.number_input("部材係数 γb (耐力低減用)", value=1.30, step=0.01)
 target_N_kN = st.sidebar.number_input("常時作用軸力 N (kN) [圧縮:+ / 引張:-]", value=3000.0, step=100.0)
 
 if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
@@ -230,8 +231,13 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         A_steel = sum([f['A'] for f in fibers if f['mat'] == 'steel'])
         A_conc = sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
         
-        Nyc_kN = (A_steel * fsyd + kc * A_conc * fcc) / 1000.0
-        Nyt_kN = - (A_steel * fsyd) / 1000.0
+        # 内部計算用の純耐力（部材係数低減前）
+        Nyc_kN_raw = (A_steel * fsyd + kc * A_conc * fcc) / 1000.0
+        Nyt_kN_raw = - (A_steel * fsyd) / 1000.0
+        
+        # 出力用の純耐力（部材係数で低減）
+        Nyc_kN = Nyc_kN_raw / gamma_b
+        Nyt_kN = Nyt_kN_raw / gamma_b
         
         if target_N_kN > Nyc_kN * 0.95 or target_N_kN < Nyt_kN * 0.95:
             st.error(f"入力された常時軸力 ({target_N_kN} kN) が、断面の純耐力範囲を超えています。計算可能な範囲に修正してください。")
@@ -243,21 +249,29 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         results_tens = []
         
         for axf in axf_list:
-            N_kN = axf * Nyc_kN
-            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t)
-            results_comp.append([N_kN, Y_pt[1], Y_pt[0], M_pt[1], M_pt[0]])
+            N_kN_raw = axf * Nyc_kN_raw
+            N_kN = N_kN_raw / gamma_b
+            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t)
+            results_comp.append([N_kN, Y_pt_raw[1] / gamma_b, Y_pt_raw[0], M_pt_raw[1] / gamma_b, M_pt_raw[0]])
             
         for axf in axf_list:
-            N_kN = axf * Nyt_kN
-            Y_pt, M_pt = find_points_for_N(N_kN * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t)
-            results_tens.append([N_kN, Y_pt[1], Y_pt[0], M_pt[1], M_pt[0]])
+            N_kN_raw = axf * Nyt_kN_raw
+            N_kN = N_kN_raw / gamma_b
+            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t)
+            results_tens.append([N_kN, Y_pt_raw[1] / gamma_b, Y_pt_raw[0], M_pt_raw[1] / gamma_b, M_pt_raw[0]])
 
         # ------------------------------------
         # グラフ1: 入力された常時軸力でのM-φ曲線
         # ------------------------------------
-        target_N_N = target_N_kN * 1000.0
-        phis_target, M_target = calc_m_phi_curve(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
-        Y_target, M_point_target = find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
+        # 内部計算用のターゲット軸力（部材係数乗算済みの外力）
+        target_N_N_raw = target_N_kN * gamma_b * 1000.0
+        phis_target, M_target_raw = calc_m_phi_curve(target_N_N_raw, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
+        Y_target_raw, M_point_target_raw = find_points_for_N(target_N_N_raw, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
+        
+        # 出力用のモーメントを部材係数で低減
+        M_target = [m / gamma_b for m in M_target_raw]
+        Y_target = (Y_target_raw[0], Y_target_raw[1] / gamma_b)
+        M_point_target = (M_point_target_raw[0], M_point_target_raw[1] / gamma_b)
         
         # 曲げ剛性の算出（曲率の微小化に伴うゼロ割りを回避）
         EI1 = (Y_target[1] / (Y_target[0] * 1000.0)) if (Y_target[1] > 0.0 and Y_target[0] > 1e-9) else 0.0
