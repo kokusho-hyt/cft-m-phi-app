@@ -15,7 +15,7 @@ if password != "cft":
 # ==========================================
 # 1. 材料モデル関数
 # ==========================================
-def get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s):
+def get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s, Ec):
     # 設計強度の算定
     fcd = fck / gamma_c
     fsyd = fsy / gamma_s
@@ -31,7 +31,6 @@ def get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s):
     ecc = 0.002 * (1 + 5 * (fcc / fcd - 1))
     
     # 割線弾性係数および弾性係数に関する比
-    Ec = 4700 * np.sqrt(fck)  # 初期弾性係数は特性値ベースとする
     Esec = fcc / ecc
     r = Ec / (Ec - Esec)
     
@@ -47,7 +46,7 @@ def sigma_concrete(eps, fcc, ecc, r, kc):
     x = eps / ecc
     return kc * (fcc * x * r) / (r - 1 + x**r)
 
-def sigma_steel(eps, fsyd, Es=200000.0):
+def sigma_steel(eps, fsyd, Es):
     # 鋼管の応力上限値に設計降伏強度(fsyd)を使用
     sigma = Es * eps
     if sigma > fsyd: return fsyd
@@ -80,7 +79,7 @@ def generate_fibers(D, t, num_layers=100):
 # ==========================================
 # 3. 断面解析エンジン
 # ==========================================
-def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, kc, Es=200000.0):
+def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, kc, Es):
     def calc_N_error(eps0):
         N_int = 0.0
         for f in fibers:
@@ -106,7 +105,7 @@ def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, kc, Es=200000.0):
         M_int += sigma * f['A'] * f['y'] * 1e-6
     return eps0_sol, M_int
 
-def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es=200000.0):
+def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es):
     eps_syd = fsyd / Es
     y_45deg_tension = - (D/2) * math.cos(math.radians(45))
     y_conc_comp = (D/2) - t
@@ -138,7 +137,7 @@ def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es=200000
     if M_pt is None: M_pt = (0.00001, 0.0)
     return Y_pt, M_pt
 
-def calc_m_phi_curve(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es=200000.0):
+def calc_m_phi_curve(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es):
     phi_max = 0.05 / D
     phis = np.linspace(0, phi_max, 100)
     moments = []
@@ -214,9 +213,11 @@ st.title(r"CFT構造 M-$\phi$特性 & FLIP入力データ自動生成")
 
 st.sidebar.header("入力条件")
 D = st.sidebar.number_input("鋼管外径 D (mm)", value=1500.0, step=10.0)
-t = st.sidebar.number_input("鋼管肉厚 t (mm)", value=20.0, step=1.0)
+t = st.sidebar.number_input("鋼管肉厚 t (mm)", value=15.0, step=1.0)
 fsy = st.sidebar.number_input("鋼材降伏強度特性値 fsy (N/mm2)", value=315.0, step=5.0)
 fck = st.sidebar.number_input("コンクリート設計基準強度 fck (N/mm2)", value=18.0, step=1.0)
+Es_input = st.sidebar.number_input("鋼材の弾性係数 Es (N/mm2)", value=205000.0, step=1000.0)
+Ec_input = st.sidebar.number_input("コンクリートの弾性係数 Ec (N/mm2)", value=22000.0, step=1000.0)
 gamma_s = st.sidebar.number_input("鋼材の材料係数 γs", value=1.05, step=0.01)
 gamma_c = st.sidebar.number_input("コンクリートの材料係数 γc", value=1.30, step=0.01)
 gamma_b = st.sidebar.number_input("部材係数 γb (耐力低減用)", value=1.30, step=0.01)
@@ -224,8 +225,9 @@ target_N_kN = st.sidebar.number_input("常時作用軸力 N (kN) [圧縮:+ / 引
 
 if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
     with st.spinner("各軸力レベルで反復解析中... (数秒かかります)"):
-        Es = 200000.0
-        fcc, ecc, r, Ec, kc, fcd, fsyd = get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s)
+        Es = Es_input
+        Ec = Ec_input
+        fcc, ecc, r, Ec_val, kc, fcd, fsyd = get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s, Ec)
         fibers = generate_fibers(D, t, num_layers=100)
         
         A_steel = sum([f['A'] for f in fibers if f['mat'] == 'steel'])
@@ -253,13 +255,13 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         for axf in axf_list:
             N_kN_raw = axf * Nyc_kN_raw
             N_kN = N_kN_raw / gamma_b
-            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t)
+            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
             results_comp.append([N_kN, Y_pt_raw[1] / gamma_b, Y_pt_raw[0], M_pt_raw[1] / gamma_b, M_pt_raw[0]])
             
         for axf in axf_list:
             N_kN_raw = axf * Nyt_kN_raw
             N_kN = N_kN_raw / gamma_b
-            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t)
+            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
             results_tens.append([N_kN, Y_pt_raw[1] / gamma_b, Y_pt_raw[0], M_pt_raw[1] / gamma_b, M_pt_raw[0]])
 
         # ------------------------------------
