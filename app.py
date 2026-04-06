@@ -239,11 +239,13 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         Nyc_kN = Nyc_kN_raw / gamma_b
         Nyt_kN = Nyt_kN_raw / gamma_b
         
-        if target_N_kN > Nyc_kN * 0.95 or target_N_kN < Nyt_kN * 0.95:
+        # 軸力上限の制限チェックを1.0倍に変更
+        if target_N_kN > Nyc_kN or target_N_kN < Nyt_kN:
             st.error(f"入力された常時軸力 ({target_N_kN} kN) が、断面の純耐力範囲を超えています。計算可能な範囲に修正してください。")
             st.stop()
         
-        axf_list = [0.0, 0.2, 0.4, 0.6, 0.8, 0.95]
+        # 軸力比リストの最大値を1.0に修正
+        axf_list = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
         
         results_comp = []
         results_tens = []
