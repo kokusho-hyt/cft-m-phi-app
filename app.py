@@ -80,7 +80,7 @@ def generate_fibers(D, t, num_layers=100):
 # 3. 断面解析エンジン
 # ==========================================
 def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
-    # 【変更点】曲げ強度算出時は kc を渡さず、内部で強制的に 1.0 とする
+    # 曲げ強度算出時は kc を強制的に 1.0 とする
     def calc_N_error(eps0):
         N_int = 0.0
         for f in fibers:
@@ -102,7 +102,7 @@ def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
         if f['mat'] == 'steel':
             sigma = sigma_steel(eps_i, fsyd, Es)
         else:
-            sigma = sigma_concrete(eps_i, fcc, ecc, r, 1.0) * f['A']
+            sigma = sigma_concrete(eps_i, fcc, ecc, r, 1.0) # バグ修正箇所
         M_int += sigma * f['A'] * f['y'] * 1e-6
     return eps0_sol, M_int
 
@@ -278,15 +278,20 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         d_phi = (M_point_target[0] - Y_target[0]) * 1000.0
         EI2 = ((M_point_target[1] - Y_target[1]) / d_phi) if (M_point_target[1] > 0.0 and d_phi > 1e-5) else 0.0
         
+        # グラフ描画用の曲率を 1/m に変換
+        phis_target_m = [p * 1000.0 for p in phis_target]
+        Y_target_phi_m = Y_target[0] * 1000.0
+        M_point_target_phi_m = M_point_target[0] * 1000.0
+        
         fig1, ax1 = plt.subplots(figsize=(8, 5))
-        ax1.plot(phis_target, M_target, 'k-', label=f'N = {target_N_kN:.0f} kN')
+        ax1.plot(phis_target_m, M_target, 'k-', label=f'N = {target_N_kN:.0f} kN')
         
         if Y_target[1] > 0.0:
-            ax1.plot(Y_target[0], Y_target[1], 'bo', markersize=8, label=f'Y Point ($M_y$={Y_target[1]:.0f})')
+            ax1.plot(Y_target_phi_m, Y_target[1], 'bo', markersize=8, label=f'Y Point ($M_y$={Y_target[1]:.0f})')
         if M_point_target[1] > 0.0:
-            ax1.plot(M_point_target[0], M_point_target[1], 'ro', markersize=8, label=f'M Point ($M_m$={M_point_target[1]:.0f})')
+            ax1.plot(M_point_target_phi_m, M_point_target[1], 'ro', markersize=8, label=f'M Point ($M_m$={M_point_target[1]:.0f})')
             
-        ax1.set_xlabel(r"Curvature $\phi$ (1/mm)")
+        ax1.set_xlabel(r"Curvature $\phi$ (1/m)")
         ax1.set_ylabel(r"Bending Moment $M$ (kN・m)")
         ax1.set_title(f"Moment-Curvature Curve at Constant Axial Force (N = {target_N_kN:.0f} kN)")
         ax1.grid(True)
@@ -325,6 +330,7 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
             st.subheader(fr"M-$\phi$ 曲線 (常時軸力 N={target_N_kN:.0f}kN)")
             st.pyplot(fig1)
             
+            # 剛性値の表示
             st.markdown(f"**第1勾配 ($EI_1$)**: {EI1:,.0f} kN・m²")
             st.markdown(f"**第2勾配 ($EI_2$)**: {EI2:,.0f} kN・m²")
             
