@@ -50,7 +50,7 @@ def generate_fibers_polar(D, t, n_r_conc=36, n_r_steel=5, n_theta=36):
     r_in = (D - 2 * t) / 2.0
     r_out = D / 2.0
     
-    # コンクリート部
+    # コンクリート部 (36 x 36 = 1296要素)
     dr_c = r_in / n_r_conc
     for i in range(n_r_conc):
         r_start, r_end = i * dr_c, (i + 1) * dr_c
@@ -101,8 +101,9 @@ def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es):
     Y_pt, M_pt = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
     found_Y, found_M, max_M, phi_max_M, eps0_max_M = False, False, 0.0, 0.0, 0.0
     for phi in phis:
-        eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, Es)
-        if eps0 is None: continue
+        res = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, Es)
+        if res[0] is None: continue
+        eps0, M = res
         if M > max_M: max_M, phi_max_M, eps0_max_M = M, phi, eps0
         if not found_Y and phi > 0 and abs(eps0 + phi * y_45deg) >= eps_syd:
             Y_pt = (phi, M, eps0); found_Y = True
@@ -173,12 +174,20 @@ if st.sidebar.button("解析実行"):
         axf_list = [0.0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95]
         res_comp, res_tens = [], []
         for axf in axf_list:
+            # 圧縮側
             nc = axf * Nyc_raw
-            y, m = find_points_for_N(nc * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            res_comp.append([nc/gamma_b, y[1]/gamma_b, y[0], m[1]/gamma_b, m[0]])
+            y, m, e0 = find_points_for_N(nc * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+            res_comp.append([nc/gamma_b, m/gamma_b, y, m/gamma_b, y]) # MyとMmの簡易セット
+            res_comp[-1][1], res_comp[-1][2] = y, m/gamma_b # 正しいMy/phi_y
+            res_comp[-1][3], res_comp[-1][4] = m/gamma_b, y # 正しいMm/phi_m
+            # 内部値を再計算
+            y_pt, m_pt = find_points_for_N(nc * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+            res_comp[-1] = [nc/gamma_b, y_pt[1]/gamma_b, y_pt[0], m_pt[1]/gamma_b, m_pt[0]]
+            
+            # 引張側
             nt = axf * Nyt_raw
-            yt, mt = find_points_for_N(nt * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            res_tens.append([nt/gamma_b, yt[1]/gamma_b, yt[0], mt[1]/gamma_b, mt[0]])
+            y_t, m_t = find_points_for_N(nt * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+            res_tens.append([nt/gamma_b, y_t[1]/gamma_b, y_t[0], m_t[1]/gamma_b, m_t[0]])
         
         y_cap, m_cap = find_points_for_N(Nyc_raw * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
         res_comp.append([Nyc_raw/gamma_b, y_cap[1]/gamma_b, y_cap[0], m_cap[1]/gamma_b, m_cap[0]])
@@ -190,21 +199,20 @@ if st.sidebar.button("解析実行"):
         phis_p = np.linspace(0, 0.08/D_ui, 150)
         m_curve = [analyze_section(p, n_tar, fibers, fsyd, fcc, ecc, r, Es_ui)[1] or 0.0 for p in phis_p]
 
-        # 断面図の描画
+        # 断面図
         st.subheader(f"断面応力状態イメージ (N = {target_N_kN} kN)")
         f_sec, (ax_y, ax_m) = plt.subplots(1, 2, figsize=(10, 5))
         plot_section_state(ax_y, fibers, y_r[2], y_r[0], fsyd, ecc, Es_ui, f"Yield (My={y_r[1]:,.0f})", D_ui)
         plot_section_state(ax_m, fibers, m_r[2], m_r[0], fsyd, ecc, Es_ui, f"Ultimate (Mm={m_r[1]:,.0f})", D_ui)
         st.pyplot(f_sec)
         
-        # --- 凡例の復活 ---
         st.markdown("""
-        **【断面図の着色凡例】** * 🟦 **鋼管（弾性）**: 応力度が設計降伏点 $f_{syd}$ 未満 [cite: 564, 579]
-        * 🟧 **鋼管（降伏）**: 45度位置または最外縁が降伏ひずみに到達 [cite: 652, 656]
-        * 🟩 **コンクリート（圧縮）**: 圧縮応力が発生している要素 [cite: 658, 659]
-        * 🟥 **コンクリート（終局）**: 縁ひずみが終局ひずみ $\epsilon'_{cu}$ に到達 
-        * ⬜ **コンクリート（引張）**: 引張応力を無視（無効セクション） [cite: 659]
-        ---
+        **【断面図の着色凡例】**
+        * 🟦 **鋼管（弾性）**: 応力度が設計降伏点以下
+        * 🟧 **鋼管（降伏）**: 45度位置が降伏ひずみに到達
+        * 🟩 **コンクリート（圧縮）**: 圧縮応力が発生
+        * 🟥 **コンクリート（終局）**: 縁ひずみがピークひずみに到達
+        * ⬜ **コンクリート（引張）**: 引張応力無視（無効）
         """)
 
         col1, col2 = st.columns([1.2, 1])
@@ -220,10 +228,8 @@ if st.sidebar.button("解析実行"):
             st.subheader("N-M 相関図 (カットオフ対応)")
             f_nm, ax_nm = plt.subplots()
             all_r = res_comp[::-1] + res_tens[1:]
-            ax_nm.plot([r[1] for r in all_r], [r[0] for r in all_res if 'all_res' not in locals() and False or True], 'bo-', label='My')
-            # 修正: 凡例描画用のリスト指定ミスをカバー
-            ax_nm.plot([r[1] for r in all_r], [r[0] for r in all_r], 'bo-') 
-            ax_nm.plot([r[3] for r in all_r], [r[0] for r in all_r], 'ro-', label='Mm')
+            ax_nm.plot([r[1] for r in all_r], [r[0] for r in all_r], 'bo-', label='My')
+            ax_nm.plot([r[3] for r in all_res if 'all_res' in locals() and False else all_r], [r[0] for r in all_r], 'ro-', label='Mm')
             ax_nm.set_xlabel("Moment (kN・m)"); ax_nm.set_ylabel("Axial (kN)"); ax_nm.grid(True); ax_nm.legend(); st.pyplot(f_nm)
         with col2:
             st.subheader("FLIP入力データ")
