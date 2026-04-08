@@ -34,7 +34,7 @@ def get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s, Ec):
     Esec = fcc / ecc
     r = Ec / (Ec - Esec)
     
-    # コンクリート強度の低減係数 kc
+    # コンクリート強度の低減係数 kc (純圧縮耐力用)
     kc = 1.0 - 0.003 * fck
     if kc > 0.85:
         kc = 0.85
@@ -79,7 +79,8 @@ def generate_fibers(D, t, num_layers=100):
 # ==========================================
 # 3. 断面解析エンジン
 # ==========================================
-def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, kc, Es):
+def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
+    # 【変更点】曲げ強度算出時は kc を渡さず、内部で強制的に 1.0 とする
     def calc_N_error(eps0):
         N_int = 0.0
         for f in fibers:
@@ -87,7 +88,7 @@ def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, kc, Es):
             if f['mat'] == 'steel':
                 N_int += sigma_steel(eps_i, fsyd, Es) * f['A']
             else:
-                N_int += sigma_concrete(eps_i, fcc, ecc, r, kc) * f['A']
+                N_int += sigma_concrete(eps_i, fcc, ecc, r, 1.0) * f['A']
         return N_int - target_N
 
     try:
@@ -101,11 +102,11 @@ def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, kc, Es):
         if f['mat'] == 'steel':
             sigma = sigma_steel(eps_i, fsyd, Es)
         else:
-            sigma = sigma_concrete(eps_i, fcc, ecc, r, kc)
+            sigma = sigma_concrete(eps_i, fcc, ecc, r, 1.0) * f['A']
         M_int += sigma * f['A'] * f['y'] * 1e-6
     return eps0_sol, M_int
 
-def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es):
+def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es):
     eps_syd = fsyd / Es
     y_45deg_tension = - (D/2) * math.cos(math.radians(45))
     y_conc_comp = (D/2) - t
@@ -118,7 +119,7 @@ def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es):
     
     Y_pt, M_pt = None, None
     for phi in phis:
-        eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, kc, Es)
+        eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, Es)
         if eps0 is None: continue
         
         eps_45deg = eps0 + phi * y_45deg_tension
@@ -137,13 +138,13 @@ def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es):
     if M_pt is None: M_pt = (0.00001, 0.0)
     return Y_pt, M_pt
 
-def calc_m_phi_curve(target_N_N, fibers, fsyd, fcc, ecc, r, kc, D, t, Es):
+def calc_m_phi_curve(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es):
     phi_max = 0.05 / D
     phis = np.linspace(0, phi_max, 100)
     moments = []
     valid_phis = []
     for phi in phis:
-        eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, kc, Es)
+        eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, Es)
         if eps0 is not None:
             moments.append(M)
             valid_phis.append(phi)
@@ -233,7 +234,7 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         A_steel = sum([f['A'] for f in fibers if f['mat'] == 'steel'])
         A_conc = sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
         
-        # 内部計算用の純耐力（部材係数低減前）
+        # 内部計算用の純耐力（純圧縮耐力の算出には引き続き kc を考慮する）
         Nyc_kN_raw = (A_steel * fsyd + kc * A_conc * fcc) / 1000.0
         Nyt_kN_raw = - (A_steel * fsyd) / 1000.0
         
@@ -241,12 +242,10 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         Nyc_kN = Nyc_kN_raw / gamma_b
         Nyt_kN = Nyt_kN_raw / gamma_b
         
-        # 軸力上限の制限チェックを1.0倍に変更
         if target_N_kN > Nyc_kN or target_N_kN < Nyt_kN:
             st.error(f"入力された常時軸力 ({target_N_kN} kN) が、断面の純耐力範囲を超えています。計算可能な範囲に修正してください。")
             st.stop()
         
-        # 軸力比リストの最大値を1.0に修正
         axf_list = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
         
         results_comp = []
@@ -255,29 +254,26 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         for axf in axf_list:
             N_kN_raw = axf * Nyc_kN_raw
             N_kN = N_kN_raw / gamma_b
-            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
+            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, D, t, Es)
             results_comp.append([N_kN, Y_pt_raw[1] / gamma_b, Y_pt_raw[0], M_pt_raw[1] / gamma_b, M_pt_raw[0]])
             
         for axf in axf_list:
             N_kN_raw = axf * Nyt_kN_raw
             N_kN = N_kN_raw / gamma_b
-            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
+            Y_pt_raw, M_pt_raw = find_points_for_N(N_kN_raw * 1000, fibers, fsyd, fcc, ecc, r, D, t, Es)
             results_tens.append([N_kN, Y_pt_raw[1] / gamma_b, Y_pt_raw[0], M_pt_raw[1] / gamma_b, M_pt_raw[0]])
 
         # ------------------------------------
         # グラフ1: 入力された常時軸力でのM-φ曲線
         # ------------------------------------
-        # 内部計算用のターゲット軸力（部材係数乗算済みの外力）
         target_N_N_raw = target_N_kN * gamma_b * 1000.0
-        phis_target, M_target_raw = calc_m_phi_curve(target_N_N_raw, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
-        Y_target_raw, M_point_target_raw = find_points_for_N(target_N_N_raw, fibers, fsyd, fcc, ecc, r, kc, D, t, Es)
+        phis_target, M_target_raw = calc_m_phi_curve(target_N_N_raw, fibers, fsyd, fcc, ecc, r, D, t, Es)
+        Y_target_raw, M_point_target_raw = find_points_for_N(target_N_N_raw, fibers, fsyd, fcc, ecc, r, D, t, Es)
         
-        # 出力用のモーメントを部材係数で低減
         M_target = [m / gamma_b for m in M_target_raw]
         Y_target = (Y_target_raw[0], Y_target_raw[1] / gamma_b)
         M_point_target = (M_point_target_raw[0], M_point_target_raw[1] / gamma_b)
         
-        # 曲げ剛性の算出（曲率の微小化に伴うゼロ割りを回避）
         EI1 = (Y_target[1] / (Y_target[0] * 1000.0)) if (Y_target[1] > 0.0 and Y_target[0] > 1e-9) else 0.0
         d_phi = (M_point_target[0] - Y_target[0]) * 1000.0
         EI2 = ((M_point_target[1] - Y_target[1]) / d_phi) if (M_point_target[1] > 0.0 and d_phi > 1e-5) else 0.0
@@ -285,7 +281,6 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
         fig1, ax1 = plt.subplots(figsize=(8, 5))
         ax1.plot(phis_target, M_target, 'k-', label=f'N = {target_N_kN:.0f} kN')
         
-        # モーメント値による有効性判定に修正
         if Y_target[1] > 0.0:
             ax1.plot(Y_target[0], Y_target[1], 'bo', markersize=8, label=f'Y Point ($M_y$={Y_target[1]:.0f})')
         if M_point_target[1] > 0.0:
@@ -330,7 +325,6 @@ if st.sidebar.button(r"全軸力でM-$\phi$解析実行"):
             st.subheader(fr"M-$\phi$ 曲線 (常時軸力 N={target_N_kN:.0f}kN)")
             st.pyplot(fig1)
             
-            # 剛性値の表示
             st.markdown(f"**第1勾配 ($EI_1$)**: {EI1:,.0f} kN・m²")
             st.markdown(f"**第2勾配 ($EI_2$)**: {EI2:,.0f} kN・m²")
             
