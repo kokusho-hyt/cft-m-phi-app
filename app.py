@@ -24,7 +24,7 @@ def get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s, Ec):
     ecc = 0.002 * (1 + 5 * (fcc / fcd - 1))
     Esec = fcc / ecc
     r = Ec / (Ec - Esec)
-    # コンクリート強度の低減係数 (0.85を標準とする)
+    # コンクリート強度の低減係数 kc (純軸圧縮用)
     kc = max(0.85, 1.0 - 0.003 * fck)
     return fcc, ecc, r, Ec, kc, fcd, fsyd
 
@@ -34,7 +34,7 @@ def sigma_concrete(eps, fcc, ecc, r, kc_val):
     return kc_val * (fcc * x * r) / (r - 1 + x**r)
 
 def sigma_steel(eps, fsyd, Es):
-    # バイリニア (硬化勾配 Es/100)
+    # バイリニア硬化 (Es/100)
     eps_syd = fsyd / Es
     if abs(eps) <= eps_syd:
         return Es * eps
@@ -43,7 +43,7 @@ def sigma_steel(eps, fsyd, Es):
         return sign * (fsyd + (abs(eps) - eps_syd) * (Es / 100.0))
 
 # ==========================================
-# 2. ファイバー断面の生成 (極座標分割)
+# 2. ファイバー断面の生成 (極座標)
 # ==========================================
 def generate_fibers_polar(D, t, n_r_conc=20, n_r_steel=5, n_theta=72):
     fibers = []
@@ -72,7 +72,7 @@ def generate_fibers_polar(D, t, n_r_conc=20, n_r_steel=5, n_theta=72):
 # 3. 断面解析エンジン
 # ==========================================
 def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
-    # 曲げ解析時は kc = 1.0
+    # 曲げ解析時は kc = 1.0 を適用
     def calc_N_error(eps0):
         N_int = 0.0
         for f in fibers:
@@ -96,6 +96,7 @@ def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
     return eps0_sol, M_int
 
 def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es, is_limit=False):
+    # 純圧縮/引張点 (M=0)
     if is_limit:
         return (0.0, 0.0), (0.0, 0.0)
     
@@ -108,25 +109,21 @@ def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es, is_limit=
     
     Y_pt, M_pt = (0.0, 0.0), (0.0, 0.0)
     found_Y, found_M = False, False
-    max_M_found = 0.0
-    phi_at_max_M = 0.0
+    max_M_found, phi_at_max = 0.0, 0.0
 
     for phi in phis:
         eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, Es)
         if eps0 is None: continue
-        
         if M > max_M_found:
             max_M_found = M
-            phi_at_max_M = phi
-
-        # 降伏 (45度)
+            phi_at_max = phi
+        
         if not found_Y and phi > 0 and abs(eps0 + phi * y_45deg) >= eps_syd:
             Y_pt = (phi, M); found_Y = True
-        # 終局 (縁ひずみ ecc)
         if not found_M and phi > 0 and (eps0 + phi * y_comp_edge >= ecc):
             M_pt = (phi, M); found_M = True; break
             
-    if not found_M: M_pt = (phi_at_max_M, max_M_found)
+    if not found_M: M_pt = (phi_at_max, max_M_found)
     return Y_pt, M_pt
 
 # ==========================================
@@ -174,30 +171,32 @@ if st.sidebar.button("解析実行"):
         fcc, ecc, r, Ec, kc, fcd, fsyd = get_confined_concrete_props(fck_ui, fsy_ui, D_ui, t_ui, 1.3, 1.05, Ec_ui)
         fibers = generate_fibers_polar(D_ui, t_ui)
         
+        # 耐力上限の計算
         A_s = sum([f['A'] for f in fibers if f['mat'] == 'steel'])
         A_c = sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
-        Nyc_raw = (A_s * fsyd + kc * A_c * fcc) / 1000.0
+        Nyc_raw = (A_s * fsyd + kc * A_c * fcc) / 1000.0 # コンクリートのみkc適用
         Nyt_raw = - (A_s * fsyd) / 1000.0
         
         axf_list = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
         results_comp, results_tens = [], []
+        
         for axf in axf_list:
-            # 圧縮側
-            n_raw_c = axf * Nyc_raw
-            y_c, m_c = find_points_for_N(n_raw_c * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui, is_limit=(axf>=1.0))
-            results_comp.append([n_raw_c/gamma_b_ui, y_c[1]/gamma_b_ui, y_c[0], m_c[1]/gamma_b_ui, m_c[0]])
-            # 引張側
-            n_raw_t = axf * Nyt_raw
-            y_t, m_t = find_points_for_N(n_raw_t * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui, is_limit=(axf>=1.0))
-            results_tens.append([n_raw_t/gamma_b_ui, y_t[1]/gamma_b_ui, y_t[0], m_t[1]/gamma_b_ui, m_t[0]])
+            for n_limit, res_list, sign in [(Nyc_raw, results_comp, 1), (Nyt_raw, results_tens, -1)]:
+                n_t = axf * n_limit
+                y, m = find_points_for_N(n_t * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui, is_limit=(axf>=1.0))
+                # 水平キャップの追加 (axf=1.0の点に対して M=0 を追加)
+                if axf >= 1.0:
+                    res_list.append([n_limit/gamma_b_ui, 0.0, 0.0, 0.0, 0.0])
+                else:
+                    res_list.append([n_t/gamma_b_ui, y[1]/gamma_b_ui, y[0], m[1]/gamma_b_ui, m[0]])
 
-        # ターゲット軸力での解析
-        n_target_raw = target_N_kN * gamma_b_ui * 1000.0
+        # ターゲット軸力
+        n_tar = target_N_kN * gamma_b_ui * 1000.0
         phis, moments = [], []
-        for p in np.linspace(0, 0.1/D_ui, 150):
-            _, mm = analyze_section(p, n_target_raw, fibers, fsyd, fcc, ecc, r, Es_ui)
+        for p in np.linspace(0, 0.08/D_ui, 150):
+            _, mm = analyze_section(p, n_tar, fibers, fsyd, fcc, ecc, r, Es_ui)
             if mm is not None: phis.append(p); moments.append(mm)
-        y_r, m_r = find_points_for_N(n_target_raw, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+        y_r, m_r = find_points_for_N(n_tar, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
         
         c1, c2 = st.columns([1.2, 1])
         with c1:
@@ -208,15 +207,16 @@ if st.sidebar.button("解析実行"):
             if m_r[1]>0: ax1.plot(m_r[0]*1000, m_r[1]/gamma_b_ui, 'ro', label=f'Mm={m_r[1]/gamma_b_ui:.0f}')
             ax1.set_xlabel("Curvature (1/m)"); ax1.set_ylabel("Moment (kN・m)"); ax1.grid(True); ax1.legend()
             st.pyplot(fig1)
-            st.info(f"My: {y_r[1]/gamma_b_ui:,.1f} | φy: {y_r[0]*1000:.5f} / Mm: {m_r[1]/gamma_b_ui:,.1f} | φm: {m_r[0]*1000:.5f}")
+            st.info(f"My: {y_r[1]/gamma_b_ui:,.1f} kN・m | φy: {y_r[0]*1000:.5f} / Mm: {m_r[1]/gamma_b_ui:,.1f} kN・m | φm: {m_r[0]*1000:.5f}")
 
             st.subheader("N-M 相関図")
             fig2, ax2 = plt.subplots()
             all_res = results_comp[::-1] + results_tens[1:]
             ax2.plot([r[1] for r in all_res], [r[0] for r in all_res], 'bo-', label='My')
             ax2.plot([r[3] for r in all_res], [r[0] for r in all_res], 'ro-', label='Mm')
+            ax2.axhline(target_N_kN, color='gray', linestyle='--')
             ax2.set_xlabel("Moment (kN・m)"); ax2.set_ylabel("Axial (kN)"); ax2.grid(True); ax2.legend()
             st.pyplot(fig2)
         with c2:
             st.subheader("FLIP入力データ")
-            st.text_area("FLIP Card Content", value=create_flip_cards(axf_list, results_comp, results_tens), height=800)
+            st.text_area("FLIP Card", value=create_flip_cards(axf_list, results_comp, results_tens), height=800)
