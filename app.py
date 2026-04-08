@@ -24,6 +24,7 @@ def get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s, Ec):
     ecc = 0.002 * (1 + 5 * (fcc / fcd - 1))
     Esec = fcc / ecc
     r = Ec / (Ec - Esec)
+    # コンクリート強度の低減係数 (0.85を標準とする)
     kc = max(0.85, 1.0 - 0.003 * fck)
     return fcc, ecc, r, Ec, kc, fcd, fsyd
 
@@ -33,12 +34,12 @@ def sigma_concrete(eps, fcc, ecc, r, kc_val):
     return kc_val * (fcc * x * r) / (r - 1 + x**r)
 
 def sigma_steel(eps, fsyd, Es):
+    # バイリニア (硬化勾配 Es/100)
     eps_syd = fsyd / Es
     if abs(eps) <= eps_syd:
         return Es * eps
     else:
         sign = np.sign(eps)
-        # ES同期: 硬化勾配 Es/100
         return sign * (fsyd + (abs(eps) - eps_syd) * (Es / 100.0))
 
 # ==========================================
@@ -71,7 +72,7 @@ def generate_fibers_polar(D, t, n_r_conc=20, n_r_steel=5, n_theta=72):
 # 3. 断面解析エンジン
 # ==========================================
 def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
-    # 曲げ解析時は kc = 1.0 (拘束効果の最大評価)
+    # 曲げ解析時は kc = 1.0
     def calc_N_error(eps0):
         N_int = 0.0
         for f in fibers:
@@ -94,31 +95,38 @@ def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
         M_int += sigma * f['A'] * f['y'] * 1e-6
     return eps0_sol, M_int
 
-def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es):
+def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es, is_limit=False):
+    if is_limit:
+        return (0.0, 0.0), (0.0, 0.0)
+    
     eps_syd = fsyd / Es
     y_45deg = - (D/2) * math.cos(math.radians(45))
     y_comp_edge = (D/2) - t
     
     phi_max = 0.12 / D 
-    phis = np.linspace(0, phi_max, 300)
+    phis = np.linspace(0, phi_max, 250)
     
     Y_pt, M_pt = (0.0, 0.0), (0.0, 0.0)
     found_Y, found_M = False, False
-    last_M = 0.0
+    max_M_found = 0.0
+    phi_at_max_M = 0.0
 
     for phi in phis:
         eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, Es)
         if eps0 is None: continue
-        last_M = M
         
-        # 降伏点 (45度位置の鋼材降伏)
+        if M > max_M_found:
+            max_M_found = M
+            phi_at_max_M = phi
+
+        # 降伏 (45度)
         if not found_Y and phi > 0 and abs(eps0 + phi * y_45deg) >= eps_syd:
             Y_pt = (phi, M); found_Y = True
-        # 終局点 (最外縁圧縮ひずみが ecc に到達)
+        # 終局 (縁ひずみ ecc)
         if not found_M and phi > 0 and (eps0 + phi * y_comp_edge >= ecc):
             M_pt = (phi, M); found_M = True; break
             
-    if not found_M: M_pt = (phis[-1], last_M)
+    if not found_M: M_pt = (phi_at_max_M, max_M_found)
     return Y_pt, M_pt
 
 # ==========================================
@@ -168,7 +176,6 @@ if st.sidebar.button("解析実行"):
         
         A_s = sum([f['A'] for f in fibers if f['mat'] == 'steel'])
         A_c = sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
-        # 軸方向耐力
         Nyc_raw = (A_s * fsyd + kc * A_c * fcc) / 1000.0
         Nyt_raw = - (A_s * fsyd) / 1000.0
         
@@ -176,18 +183,18 @@ if st.sidebar.button("解析実行"):
         results_comp, results_tens = [], []
         for axf in axf_list:
             # 圧縮側
-            n_target = axf * Nyc_raw
-            y, m = find_points_for_N(n_target * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            results_comp.append([n_target/gamma_b_ui, y[1]/gamma_b_ui, y[0], m[1]/gamma_b_ui, m[0]])
+            n_raw_c = axf * Nyc_raw
+            y_c, m_c = find_points_for_N(n_raw_c * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui, is_limit=(axf>=1.0))
+            results_comp.append([n_raw_c/gamma_b_ui, y_c[1]/gamma_b_ui, y_c[0], m_c[1]/gamma_b_ui, m_c[0]])
             # 引張側
-            n_target_t = axf * Nyt_raw
-            y_t, m_t = find_points_for_N(n_target_t * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            results_tens.append([n_target_t/gamma_b_ui, y_t[1]/gamma_b_ui, y_t[0], m_t[1]/gamma_b_ui, m_t[0]])
+            n_raw_t = axf * Nyt_raw
+            y_t, m_t = find_points_for_N(n_raw_t * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui, is_limit=(axf>=1.0))
+            results_tens.append([n_raw_t/gamma_b_ui, y_t[1]/gamma_b_ui, y_t[0], m_t[1]/gamma_b_ui, m_t[0]])
 
-        # ターゲット軸力でのM-phi
+        # ターゲット軸力での解析
         n_target_raw = target_N_kN * gamma_b_ui * 1000.0
         phis, moments = [], []
-        for p in np.linspace(0, 0.08/D_ui, 150):
+        for p in np.linspace(0, 0.1/D_ui, 150):
             _, mm = analyze_section(p, n_target_raw, fibers, fsyd, fcc, ecc, r, Es_ui)
             if mm is not None: phis.append(p); moments.append(mm)
         y_r, m_r = find_points_for_N(n_target_raw, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
@@ -201,18 +208,14 @@ if st.sidebar.button("解析実行"):
             if m_r[1]>0: ax1.plot(m_r[0]*1000, m_r[1]/gamma_b_ui, 'ro', label=f'Mm={m_r[1]/gamma_b_ui:.0f}')
             ax1.set_xlabel("Curvature (1/m)"); ax1.set_ylabel("Moment (kN・m)"); ax1.grid(True); ax1.legend()
             st.pyplot(fig1)
-            
-            # 数値の表示を復活
-            st.info(f"**降伏点 (Y Point)**: My = {y_r[1]/gamma_b_ui:,.1f} kN・m | φy = {y_r[0]*1000:.5f} 1/m")
-            st.info(f"**終局点 (M Point)**: Mm = {m_r[1]/gamma_b_ui:,.1f} kN・m | φm = {m_r[0]*1000:.5f} 1/m")
+            st.info(f"My: {y_r[1]/gamma_b_ui:,.1f} | φy: {y_r[0]*1000:.5f} / Mm: {m_r[1]/gamma_b_ui:,.1f} | φm: {m_r[0]*1000:.5f}")
 
             st.subheader("N-M 相関図")
             fig2, ax2 = plt.subplots()
             all_res = results_comp[::-1] + results_tens[1:]
-            ax2.plot([r[1] for r in all_res], [r[0] for r in all_res], 'bo-', label='My (Yield)')
-            ax2.plot([r[3] for r in all_res], [r[0] for r in all_res], 'ro-', label='Mm (Ultimate)')
-            ax2.axhline(target_N_kN, color='gray', linestyle='--')
-            ax2.set_xlabel("Moment (kN・m)"); ax2.set_ylabel("Axial Force (kN)"); ax2.grid(True); ax2.legend()
+            ax2.plot([r[1] for r in all_res], [r[0] for r in all_res], 'bo-', label='My')
+            ax2.plot([r[3] for r in all_res], [r[0] for r in all_res], 'ro-', label='Mm')
+            ax2.set_xlabel("Moment (kN・m)"); ax2.set_ylabel("Axial (kN)"); ax2.grid(True); ax2.legend()
             st.pyplot(fig2)
         with c2:
             st.subheader("FLIP入力データ")
