@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Wedge, Circle
 from scipy.optimize import brentq
 import math
 
@@ -41,102 +42,101 @@ def sigma_steel(eps, fsyd, Es):
         return sign * (fsyd + (abs(eps) - eps_syd) * (Es / 100.0))
 
 # ==========================================
-# 2. ファイバー断面の生成 (極座標)
+# 2. ファイバー断面の生成 (可視化用データ追加)
 # ==========================================
-def generate_fibers_polar(D, t, n_r_conc=20, n_r_steel=5, n_theta=72):
+def generate_fibers_polar(D, t, n_r_conc=15, n_r_steel=3, n_theta=72):
     fibers = []
-    d_theta = 2 * math.pi / n_theta
+    d_theta = 360.0 / n_theta
     r_in = (D - 2 * t) / 2.0
     r_out = D / 2.0
+    
+    # コンクリート
     dr_c = r_in / n_r_conc
     for i in range(n_r_conc):
-        r = (i + 0.5) * dr_c
-        area = r * dr_c * d_theta
+        r_start = i * dr_c
+        r_end = (i + 1) * dr_c
+        r_mid = (r_start + r_end) / 2.0
+        area = (r_end**2 - r_start**2) * math.pi / n_theta
         for j in range(n_theta):
-            theta = (j + 0.5) * d_theta
-            fibers.append({'y': r * math.cos(theta), 'A': area, 'mat': 'concrete'})
+            theta_deg = j * d_theta
+            theta_rad = math.radians(theta_deg + d_theta/2.0)
+            fibers.append({
+                'x': r_mid * math.sin(theta_rad), 'y': r_mid * math.cos(theta_rad),
+                'r_start': r_start, 'r_end': r_end, 'theta_start': theta_deg, 'theta_end': theta_deg + d_theta,
+                'A': area, 'mat': 'concrete'
+            })
+    # 鋼管
     dr_s = t / n_r_steel
     for i in range(n_r_steel):
-        r = r_in + (i + 0.5) * dr_s
-        area = r * dr_s * d_theta
+        r_start = r_in + i * dr_s
+        r_end = r_in + (i + 1) * dr_s
+        r_mid = (r_start + r_end) / 2.0
+        area = (r_end**2 - r_start**2) * math.pi / n_theta
         for j in range(n_theta):
-            theta = (j + 0.5) * d_theta
-            fibers.append({'y': r * math.cos(theta), 'A': area, 'mat': 'steel'})
+            theta_deg = j * d_theta
+            theta_rad = math.radians(theta_deg + d_theta/2.0)
+            fibers.append({
+                'x': r_mid * math.sin(theta_rad), 'y': r_mid * math.cos(theta_rad),
+                'r_start': r_start, 'r_end': r_end, 'theta_start': theta_deg, 'theta_end': theta_deg + d_theta,
+                'A': area, 'mat': 'steel'
+            })
     return fibers
 
 # ==========================================
-# 3. 断面解析エンジン
+# 3. 解析・描画エンジン
 # ==========================================
 def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
     def calc_N_error(eps0):
-        N_int = 0.0
-        for f in fibers:
-            eps_i = eps0 + phi * f['y']
-            if f['mat'] == 'steel':
-                N_int += sigma_steel(eps_i, fsyd, Es) * f['A']
-            else:
-                N_int += sigma_concrete(eps_i, fcc, ecc, r, 1.0) * f['A']
+        N_int = sum([ (sigma_steel(eps0 + phi * f['y'], fsyd, Es) if f['mat'] == 'steel' else sigma_concrete(eps0 + phi * f['y'], fcc, ecc, r, 1.0)) * f['A'] for f in fibers])
         return N_int - target_N
     try:
         eps0_sol = brentq(calc_N_error, -1.0, 1.0)
-    except ValueError:
-        return None, None
-    M_int = 0.0
-    for f in fibers:
-        eps_i = eps0_sol + phi * f['y']
-        sigma = sigma_steel(eps_i, fsyd, Es) if f['mat'] == 'steel' else sigma_concrete(eps_i, fcc, ecc, r, 1.0)
-        M_int += sigma * f['A'] * f['y'] * 1e-6
+    except: return None, None
+    M_int = sum([ (sigma_steel(eps0_sol + phi * f['y'], fsyd, Es) if f['mat'] == 'steel' else sigma_concrete(eps0_sol + phi * f['y'], fcc, ecc, r, 1.0)) * f['A'] * f['y'] * 1e-6 for f in fibers])
     return eps0_sol, M_int
+
+def plot_section_state(ax, fibers, eps0, phi, fsyd, ecc, Es, title, D):
+    ax.set_aspect('equal')
+    eps_syd = fsyd / Es
+    for f in fibers:
+        eps_f = eps0 + phi * f['y']
+        color = 'lightgray'
+        if f['mat'] == 'steel':
+            color = 'orange' if abs(eps_f) >= eps_syd else 'royalblue'
+        else:
+            if eps_f >= ecc: color = 'red'
+            elif eps_f > 0: color = 'lightgreen'
+            else: color = 'whitesmoke'
+        
+        wedge = Wedge((0, 0), f['r_end'], f['theta_start']+90, f['theta_end']+90, width=f['r_end']-f['r_start'], facecolor=color, edgecolor='none', alpha=0.8)
+        ax.add_patch(wedge)
+    
+    # 45度位置のマーカー
+    y_45 = (D/2) * math.cos(math.radians(45))
+    ax.plot([y_45, -y_45], [-y_45, -y_45], 'ro', markersize=8, label='45° Yield Detect')
+    ax.set_title(title); ax.set_xlim(-D/2-50, D/2+50); ax.set_ylim(-D/2-50, D/2+50); ax.axis('off')
 
 def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es):
     eps_syd = fsyd / Es
     y_45deg = - (D/2) * math.cos(math.radians(45))
     y_comp_edge = (D/2) - t
-    phi_max = 0.12 / D 
-    phis = np.linspace(0, phi_max, 300)
-    Y_pt, M_pt = (0.0, 0.0), (0.0, 0.0)
+    phis = np.linspace(0, 0.15/D, 300)
+    Y_pt, M_pt = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
     found_Y, found_M = False, False
-    max_M_found, phi_at_max = 0.0, 0.0
     for phi in phis:
         eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, Es)
         if eps0 is None: continue
-        if M > max_M_found: max_M_found, phi_at_max = M, phi
         if not found_Y and phi > 0 and abs(eps0 + phi * y_45deg) >= eps_syd:
-            Y_pt = (phi, M); found_Y = True
+            Y_pt = (phi, M, eps0); found_Y = True
         if not found_M and phi > 0 and (eps0 + phi * y_comp_edge >= ecc):
-            M_pt = (phi, M); found_M = True; break
-    if not found_M: M_pt = (phi_at_max, max_M_found)
+            M_pt = (phi, M, eps0); found_M = True; break
     return Y_pt, M_pt
 
 # ==========================================
-# 4. FLIPフォーマット生成
-# ==========================================
-def to_f10(val):
-    if val == 0.0: return "       0.0"
-    s = f"{val:10.2f}" if abs(val) >= 100 else f"{val:10.4f}"
-    return s[:10].rjust(10)
-
-def create_flip_cards(results_comp, results_tens, axf_labels):
-    all_results = results_comp[::-1] + results_tens[1:]
-    n_points = len(all_results)
-    cards = f"c --- IAX = 2{n_points:02d} (非対称モデル {n_points}点) ---\n"
-    cards += "c RNNY(N), RMMP(Mp)\n"
-    for i in range(0, n_points, 4):
-        row = "".join([to_f10(all_results[i+j][0]) + to_f10(all_results[i+j][3]) for j in range(4) if i+j < n_points])
-        cards += row + "\n"
-    cards += "c RNMY(N), RMMY(My)\n"
-    for i in range(0, n_points, 4):
-        row = "".join([to_f10(all_results[i+j][0]) + to_f10(all_results[i+j][1]) for j in range(4) if i+j < n_points])
-        cards += row + "\n"
-    cards += "c AXF Labels (Compression Ratio)\n"
-    cards += "".join([to_f10(x) for x in (axf_labels + [0.0]*8)[:8]]) + "\n"
-    return cards
-
-# ==========================================
-# 5. UI & 解析
+# 4. Streamlit UI
 # ==========================================
 st.set_page_config(page_title="CFT M-φ ES同期版", layout="wide")
-st.title("CFT構造 M-φ特性 & N-M相関図 (カットオフ対応版)")
+st.title("CFT構造 M-φ特性 & 断面応力状態可視化")
 
 st.sidebar.header("入力条件")
 D_ui = st.sidebar.number_input("外径 D (mm)", value=1498.0)
@@ -145,61 +145,31 @@ fsy_ui = st.sidebar.number_input("降伏強度 (N/mm2)", value=315.0)
 fck_ui = st.sidebar.number_input("コンクリート強度 (N/mm2)", value=18.0)
 Es_ui = st.sidebar.number_input("鋼材 Es (N/mm2)", value=205000.0)
 Ec_ui = st.sidebar.number_input("コンクリート Ec (N/mm2)", value=22000.0)
-gamma_b_ui = st.sidebar.number_input("部材係数 γb", value=1.00)
 target_N_kN = st.sidebar.number_input("常時軸力 N (kN)", value=0.0)
 
 if st.sidebar.button("解析実行"):
-    with st.spinner("詳細解析中..."):
-        fcc, ecc, r, Ec, kc, fcd, fsyd = get_confined_concrete_props(fck_ui, fsy_ui, D_ui, t_ui, 1.3, 1.05, Ec_ui)
-        fibers = generate_fibers_polar(D_ui, t_ui)
-        A_s, A_c = sum([f['A'] for f in fibers if f['mat'] == 'steel']), sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
-        Nyc_raw, Nyt_raw = (A_s * fsyd + kc * A_c * fcc) / 1000.0, - (A_s * fsyd) / 1000.0
+    fcc, ecc, r, Ec, kc, fcd, fsyd = get_confined_concrete_props(fck_ui, fsy_ui, D_ui, t_ui, 1.3, 1.05, Ec_ui)
+    fibers = generate_fibers_polar(D_ui, t_ui, n_r_conc=15, n_r_steel=3, n_theta=72)
+    n_tar = target_N_kN * 1000.0
+    y_r, m_r = find_points_for_N(n_tar, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
 
-        # カットオフを表現するためaxf=1.0において2点を追加
-        axf_list = [0.0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95]
-        results_comp, results_tens = [], []
-        
-        # 圧縮側ループ
-        for axf in axf_list:
-            n_val = axf * Nyc_raw
-            y, m = find_points_for_N(n_val * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            results_comp.append([n_val/gamma_b_ui, y[1]/gamma_b_ui, y[0], m[1]/gamma_b_ui, m[0]])
-        # 圧縮側キャップ(1.0)
-        y_cap, m_cap = find_points_for_N(Nyc_raw * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-        results_comp.append([Nyc_raw/gamma_b_ui, y_cap[1]/gamma_b_ui, y_cap[0], m_cap[1]/gamma_b_ui, m_cap[0]])
-        results_comp.append([Nyc_raw/gamma_b_ui, 0.0, 0.0, 0.0, 0.0]) # Y軸上の点
+    # 断面図描画
+    st.subheader(f"断面応力分布イメージ (軸力 N = {target_N_kN} kN)")
+    fig_sec, (ax_y, ax_m) = plt.subplots(1, 2, figsize=(10, 5))
+    plot_section_state(ax_y, fibers, y_r[2], y_r[0], fsyd, ecc, Es_ui, f"Yield State (My={y_r[1]:,.0f})", D_ui)
+    plot_section_state(ax_m, fibers, m_r[2], m_r[0], fsyd, ecc, Es_ui, f"Ultimate State (Mm={m_r[1]:,.0f})", D_ui)
+    st.pyplot(fig_sec)
 
-        # 引張側ループ
-        for axf in axf_list:
-            n_val = axf * Nyt_raw
-            y, m = find_points_for_N(n_val * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            results_tens.append([n_val/gamma_b_ui, y[1]/gamma_b_ui, y[0], m[1]/gamma_b_ui, m[0]])
-        results_tens.append([Nyt_raw/gamma_b_ui, 0.0, 0.0, 0.0, 0.0]) # 純引張
-
-        # ターゲット軸力
-        n_tar = target_N_kN * gamma_b_ui * 1000.0
-        phis_plot = np.linspace(0, 0.1/D_ui, 150)
+    # 特性表示
+    c1, c2 = st.columns(2)
+    with c1:
+        st.info(f"**降伏点 (My)**: {y_r[1]:,.1f} kNm | **φy**: {y_r[0]*1000:.5f} 1/m")
+        phis_plot = np.linspace(0, 0.1/D_ui, 100)
         m_curve = [analyze_section(p, n_tar, fibers, fsyd, fcc, ecc, r, Es_ui)[1] or 0.0 for p in phis_plot]
-        y_r, m_r = find_points_for_N(n_tar, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-
-        c1, c2 = st.columns([1.2, 1])
-        with c1:
-            st.subheader("M-φ 曲線 (1/m)")
-            fig1, ax1 = plt.subplots()
-            ax1.plot([p*1000 for p in phis_plot], [m/gamma_b_ui for m in m_curve], 'k-')
-            if y_r[1]>0: ax1.plot(y_r[0]*1000, y_r[1]/gamma_b_ui, 'bo', label=f'My={y_r[1]/gamma_b_ui:.0f}')
-            if m_r[1]>0: ax1.plot(m_r[0]*1000, m_r[1]/gamma_b_ui, 'ro', label=f'Mm={m_r[1]/gamma_b_ui:.0f}')
-            ax1.set_xlabel("Curvature (1/m)"); ax1.set_ylabel("Moment (kN・m)"); ax1.grid(True); ax1.legend()
-            st.pyplot(fig1)
-            st.info(f"My: {y_r[1]/gamma_b_ui:,.1f} | φy: {y_r[0]*1000:.5f} / Mm: {m_r[1]/gamma_b_ui:,.1f} | φm: {m_r[0]*1000:.5f} ")
-
-            st.subheader("N-M 相関図 (カットオフ対応)")
-            fig2, ax2 = plt.subplots()
-            all_res = results_comp[::-1] + results_tens[1:]
-            ax2.plot([r[1] for r in all_res], [r[0] for r in all_res], 'bo-', label='Yield')
-            ax2.plot([r[3] for r in all_res], [r[0] for r in all_res], 'ro-', label='Ultimate')
-            ax2.set_xlabel("Moment (kN・m)"); ax2.set_ylabel("Axial Force (kN)"); ax2.grid(True); ax2.legend()
-            st.pyplot(fig2)
-        with c2:
-            st.subheader("FLIP入力データ (IAX=218)")
-            st.text_area("Data", value=create_flip_cards(results_comp, results_tens, axf_list+[1.0]), height=800)
+        fig_mphi, ax_mp = plt.subplots()
+        ax_mp.plot([p*1000 for p in phis_plot], m_curve, 'k-'); ax_mp.plot(y_r[0]*1000, y_r[1], 'bo'); ax_mp.plot(m_r[0]*1000, m_r[1], 'ro')
+        ax_mp.set_xlabel("Curvature (1/m)"); ax_mp.set_ylabel("Moment (kNm)"); ax_mp.grid(True); st.pyplot(fig_mphi)
+    with c2:
+        st.success(f"**終局点 (Mm)**: {m_r[1]:,.1f} kNm | **φm**: {m_r[0]*1000:.5f} 1/m")
+        st.markdown("**凡例:**")
+        st.write("🟦 鋼管(弾性) 🟧 鋼管(降伏) | 🟩 コンクリート(圧縮) 🟥 コンクリート(終局ひずみ到達)")
