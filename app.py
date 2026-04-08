@@ -16,13 +16,13 @@ if password != "cft":
 # 1. 材料モデル関数
 # ==========================================
 def get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s, Ec):
-    fcd = fck / gamma_c [cite: 338, 352]
-    fsyd = fsy / gamma_s [cite: 345, 360]
+    fcd = fck / gamma_c 
+    fsyd = fsy / gamma_s 
     
     alpha = 1.0 [cite: 73, 346, 361]
-    f1 = 2 * t * alpha * fsyd / (D - 2 * t) [cite: 21, 347, 362]
-    fcc = fcd * (2.254 * np.sqrt(1 + 7.94 * f1 / fck) - 2 * f1 / fck - 1.254) [cite: 8, 347, 364]
-    ecc = 0.002 * (1 + 5 * (fcc / fcd - 1)) [cite: 56, 57, 348, 366]
+    f1 = 2 * t * alpha * fsyd / (D - 2 * t)
+    fcc = fcd * (2.254 * np.sqrt(1 + 7.94 * f1 / fck) - 2 * f1 / fck - 1.254)
+    ecc = 0.002 * (1 + 5 * (fcc / fcd - 1))
     
     Esec = fcc / ecc [cite: 62, 349, 379]
     r = Ec / (Ec - Esec) [cite: 59, 371, 380]
