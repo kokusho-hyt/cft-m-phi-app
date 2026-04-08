@@ -77,12 +77,10 @@ def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
             else:
                 N_int += sigma_concrete(eps_i, fcc, ecc, r, 1.0) * f['A']
         return N_int - target_N
-
     try:
         eps0_sol = brentq(calc_N_error, -1.0, 1.0)
     except ValueError:
         return None, None
-
     M_int = 0.0
     for f in fibers:
         eps_i = eps0_sol + phi * f['y']
@@ -94,26 +92,19 @@ def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es):
     eps_syd = fsyd / Es
     y_45deg = - (D/2) * math.cos(math.radians(45))
     y_comp_edge = (D/2) - t
-    
     phi_max = 0.12 / D 
-    phis = np.linspace(0, phi_max, 250)
-    
+    phis = np.linspace(0, phi_max, 300)
     Y_pt, M_pt = (0.0, 0.0), (0.0, 0.0)
     found_Y, found_M = False, False
     max_M_found, phi_at_max = 0.0, 0.0
-
     for phi in phis:
         eps0, M = analyze_section(phi, target_N_N, fibers, fsyd, fcc, ecc, r, Es)
         if eps0 is None: continue
-        
-        if M > max_M_found:
-            max_M_found, phi_at_max = M, phi
-
+        if M > max_M_found: max_M_found, phi_at_max = M, phi
         if not found_Y and phi > 0 and abs(eps0 + phi * y_45deg) >= eps_syd:
             Y_pt = (phi, M); found_Y = True
         if not found_M and phi > 0 and (eps0 + phi * y_comp_edge >= ecc):
             M_pt = (phi, M); found_M = True; break
-            
     if not found_M: M_pt = (phi_at_max, max_M_found)
     return Y_pt, M_pt
 
@@ -125,7 +116,7 @@ def to_f10(val):
     s = f"{val:10.2f}" if abs(val) >= 100 else f"{val:10.4f}"
     return s[:10].rjust(10)
 
-def create_flip_cards(axf_list, results_comp, results_tens):
+def create_flip_cards(results_comp, results_tens, axf_labels):
     all_results = results_comp[::-1] + results_tens[1:]
     n_points = len(all_results)
     cards = f"c --- IAX = 2{n_points:02d} (非対称モデル {n_points}点) ---\n"
@@ -137,14 +128,12 @@ def create_flip_cards(axf_list, results_comp, results_tens):
     for i in range(0, n_points, 4):
         row = "".join([to_f10(all_results[i+j][0]) + to_f10(all_results[i+j][1]) for j in range(4) if i+j < n_points])
         cards += row + "\n"
-    # AXF行の出力 (最大10カラム * 8個を想定)
-    cards += "c AXF (Compression Ratio)\n"
-    axf_full = axf_list + [0.0] * (8 - len(axf_list))
-    cards += "".join([to_f10(x) for x in axf_full[:8]]) + "\n"
+    cards += "c AXF Labels (Compression Ratio)\n"
+    cards += "".join([to_f10(x) for x in (axf_labels + [0.0]*8)[:8]]) + "\n"
     return cards
 
 # ==========================================
-# 5. UI & 解析実行
+# 5. UI & 解析
 # ==========================================
 st.set_page_config(page_title="CFT M-φ ES同期版", layout="wide")
 st.title("CFT構造 M-φ特性 & N-M相関図 (カットオフ対応版)")
@@ -163,51 +152,48 @@ if st.sidebar.button("解析実行"):
     with st.spinner("詳細解析中..."):
         fcc, ecc, r, Ec, kc, fcd, fsyd = get_confined_concrete_props(fck_ui, fsy_ui, D_ui, t_ui, 1.3, 1.05, Ec_ui)
         fibers = generate_fibers_polar(D_ui, t_ui)
-        A_s = sum([f['A'] for f in fibers if f['mat'] == 'steel'])
-        A_c = sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
-        Nyc_raw = (A_s * fsyd + kc * A_c * fcc) / 1000.0
-        Nyt_raw = - (A_s * fsyd) / 1000.0
+        A_s, A_c = sum([f['A'] for f in fibers if f['mat'] == 'steel']), sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
+        Nyc_raw, Nyt_raw = (A_s * fsyd + kc * A_c * fcc) / 1000.0, - (A_s * fsyd) / 1000.0
 
-        # カットオフ形状を表現するため、高軸力側の点数を増やす
-        axf_list = [0.0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 1.0]
+        # カットオフを表現するためaxf=1.0において2点を追加
+        axf_list = [0.0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95]
         results_comp, results_tens = [], []
         
+        # 圧縮側ループ
         for axf in axf_list:
-            # 圧縮側: 理論曲線(kc=1.0)を上限(kc=0.85)でクリップ
-            n_t = axf * Nyc_raw
-            y, m = find_points_for_N(n_t * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            # axf=1.0の点は、イメージ図通りM=0, N=Nycに強制
-            if axf >= 1.0:
-                results_comp.append([n_t/gamma_b_ui, 0.0, 0.0, 0.0, 0.0])
-            else:
-                results_comp.append([n_t/gamma_b_ui, y[1]/gamma_b_ui, y[0], m[1]/gamma_b_ui, m[0]])
-            
-            # 引張側
-            n_t_tens = axf * Nyt_raw
-            y_t, m_t = find_points_for_N(n_t_tens * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            if axf >= 1.0:
-                results_tens.append([n_t_tens/gamma_b_ui, 0.0, 0.0, 0.0, 0.0])
-            else:
-                results_tens.append([n_t_tens/gamma_b_ui, y_t[1]/gamma_b_ui, y_t[0], m_t[1]/gamma_b_ui, m_t[0]])
+            n_val = axf * Nyc_raw
+            y, m = find_points_for_N(n_val * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+            results_comp.append([n_val/gamma_b_ui, y[1]/gamma_b_ui, y[0], m[1]/gamma_b_ui, m[0]])
+        # 圧縮側キャップ(1.0)
+        y_cap, m_cap = find_points_for_N(Nyc_raw * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+        results_comp.append([Nyc_raw/gamma_b_ui, y_cap[1]/gamma_b_ui, y_cap[0], m_cap[1]/gamma_b_ui, m_cap[0]])
+        results_comp.append([Nyc_raw/gamma_b_ui, 0.0, 0.0, 0.0, 0.0]) # Y軸上の点
 
-        # 描画用データ
+        # 引張側ループ
+        for axf in axf_list:
+            n_val = axf * Nyt_raw
+            y, m = find_points_for_N(n_val * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+            results_tens.append([n_val/gamma_b_ui, y[1]/gamma_b_ui, y[0], m[1]/gamma_b_ui, m[0]])
+        results_tens.append([Nyt_raw/gamma_b_ui, 0.0, 0.0, 0.0, 0.0]) # 純引張
+
+        # ターゲット軸力
         n_tar = target_N_kN * gamma_b_ui * 1000.0
-        y_r, m_r = find_points_for_N(n_tar, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-        phis_plot = np.linspace(0, 0.08/D_ui, 150)
+        phis_plot = np.linspace(0, 0.1/D_ui, 150)
         m_curve = [analyze_section(p, n_tar, fibers, fsyd, fcc, ecc, r, Es_ui)[1] or 0.0 for p in phis_plot]
+        y_r, m_r = find_points_for_N(n_tar, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
 
         c1, c2 = st.columns([1.2, 1])
         with c1:
             st.subheader("M-φ 曲線 (1/m)")
             fig1, ax1 = plt.subplots()
             ax1.plot([p*1000 for p in phis_plot], [m/gamma_b_ui for m in m_curve], 'k-')
-            ax1.plot(y_r[0]*1000, y_r[1]/gamma_b_ui, 'bo', label=f'My={y_r[1]/gamma_b_ui:.0f}')
-            ax1.plot(m_r[0]*1000, m_r[1]/gamma_b_ui, 'ro', label=f'Mm={m_r[1]/gamma_b_ui:.0f}')
+            if y_r[1]>0: ax1.plot(y_r[0]*1000, y_r[1]/gamma_b_ui, 'bo', label=f'My={y_r[1]/gamma_b_ui:.0f}')
+            if m_r[1]>0: ax1.plot(m_r[0]*1000, m_r[1]/gamma_b_ui, 'ro', label=f'Mm={m_r[1]/gamma_b_ui:.0f}')
             ax1.set_xlabel("Curvature (1/m)"); ax1.set_ylabel("Moment (kN・m)"); ax1.grid(True); ax1.legend()
             st.pyplot(fig1)
-            st.info(f"My: {y_r[1]/gamma_b_ui:,.1f} | φy: {y_r[0]*1000:.5f} / Mm: {m_r[1]/gamma_b_ui:,.1f} | φm: {m_r[0]*1000:.5f}")
+            st.info(f"My: {y_r[1]/gamma_b_ui:,.1f} | φy: {y_r[0]*1000:.5f} / Mm: {m_r[1]/gamma_b_ui:,.1f} | φm: {m_r[0]*1000:.5f} ")
 
-            st.subheader("N-M 相関図 (カットオフ表示)")
+            st.subheader("N-M 相関図 (カットオフ対応)")
             fig2, ax2 = plt.subplots()
             all_res = results_comp[::-1] + results_tens[1:]
             ax2.plot([r[1] for r in all_res], [r[0] for r in all_res], 'bo-', label='Yield')
@@ -215,5 +201,5 @@ if st.sidebar.button("解析実行"):
             ax2.set_xlabel("Moment (kN・m)"); ax2.set_ylabel("Axial Force (kN)"); ax2.grid(True); ax2.legend()
             st.pyplot(fig2)
         with c2:
-            st.subheader("FLIP入力データ (IAX=215)")
-            st.text_area("Copy Content", value=create_flip_cards(axf_list, results_comp, results_tens), height=800)
+            st.subheader("FLIP入力データ (IAX=218)")
+            st.text_area("Data", value=create_flip_cards(results_comp, results_tens, axf_list+[1.0]), height=800)
