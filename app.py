@@ -138,14 +138,14 @@ st.set_page_config(page_title="CFT M-φ ES同期版", layout="wide")
 st.title(r"CFT構造 M-$\phi$特性 & N-M相関図")
 
 st.sidebar.header("入力条件")
-D = st.sidebar.number_input("鋼管外径 D (mm)", value=1498.0) [cite: 95, 341]
-t = st.sidebar.number_input("鋼管肉厚 t (mm)", value=15.0) [cite: 94, 342]
-fsy = st.sidebar.number_input("鋼材降伏強度特性値 fsy (N/mm2)", value=315.0) [cite: 93, 358]
-fck = st.sidebar.number_input("コンクリート強度特性値 fck (N/mm2)", value=18.0) [cite: 93, 335]
-Es_in = st.sidebar.number_input("鋼材の弾性係数 Es (N/mm2)", value=205000.0) [cite: 172, 353]
-Ec_in = st.sidebar.number_input("コンクリートの弾性係数 Ec (N/mm2)", value=22000.0) [cite: 136, 353]
-gamma_b = st.sidebar.number_input("部材係数 γb", value=1.10) [cite: 2, 55]
-target_N_kN = st.sidebar.number_input("常時作用軸力 N (kN)", value=0.0) [cite: 459]
+D = st.sidebar.number_input("鋼管外径 D (mm)", value=1498.0)
+t = st.sidebar.number_input("鋼管肉厚 t (mm)", value=15.0)
+fsy = st.sidebar.number_input("鋼材降伏強度特性値 fsy (N/mm2)", value=315.0) 
+fck = st.sidebar.number_input("コンクリート強度特性値 fck (N/mm2)", value=18.0) 
+Es_in = st.sidebar.number_input("鋼材の弾性係数 Es (N/mm2)", value=205000.0) 
+Ec_in = st.sidebar.number_input("コンクリートの弾性係数 Ec (N/mm2)", value=22000.0) 
+gamma_b = st.sidebar.number_input("部材係数 γb", value=1.10) 
+target_N_kN = st.sidebar.number_input("常時作用軸力 N (kN)", value=0.0)
 
 if st.sidebar.button(r"解析実行"):
     with st.spinner("解析中..."):
