@@ -52,7 +52,6 @@ def generate_fibers_polar(D, t, n_r_conc=36, n_r_steel=5, n_theta=36):
     fibers = []
     d_theta = 360.0 / n_theta
     r_in = (D - 2 * t) / 2.0
-    r_out = D / 2.0
     
     dr_c = r_in / n_r_conc
     for i in range(n_r_conc):
@@ -145,13 +144,17 @@ def to_f10(val):
     return s[:10].rjust(10)
 
 def create_flip_cards(res_comp, res_tens, axf_list):
+    # res_comp/res_tens 構造: [Ny, My, phi_y, Np, Mp, phi_p]
     all_res = res_comp[::-1] + res_tens[1:]
     n = len(all_res)
     cards = f"c --- IAX = 2{n:02d} (非対称モデル {n}点) ---\n"
     
+    # Np と Mp の出力 (インデックス3と4)
     cards += "c RNNY(N), RMMP(Mp)\n"
     for i in range(0, n, 4):
-        cards += "".join([to_f10(all_res[i+j][0]) + to_f10(all_res[i+j][3]) for j in range(4) if i+j < n]) + "\n"
+        cards += "".join([to_f10(all_res[i+j][3]) + to_f10(all_res[i+j][4]) for j in range(4) if i+j < n]) + "\n"
+        
+    # Ny と My の出力 (インデックス0と1)
     cards += "c RNMY(N), RMMY(My)\n"
     for i in range(0, n, 4):
         cards += "".join([to_f10(all_res[i+j][0]) + to_f10(all_res[i+j][1]) for j in range(4) if i+j < n]) + "\n"
@@ -160,7 +163,7 @@ def create_flip_cards(res_comp, res_tens, axf_list):
         return max(phi / phi_0, 0.01) if phi_0 > 0 else 1.0
 
     phi_y_0 = res_comp[0][2]
-    phi_m_0 = res_comp[0][4]
+    phi_m_0 = res_comp[0][5]
 
     def to_8col_rows(vals):
         padded = vals + [0.0] * ((8 - len(vals) % 8) % 8)
@@ -179,10 +182,10 @@ def create_flip_cards(res_comp, res_tens, axf_list):
     cards += to_8col_rows([safe_ratio(res[2], phi_y_0) for res in res_tens[:8]])
 
     cards += "c CpRFC (phi_p / phi_p0 Comp) (+++4枚目)\n"
-    cards += to_8col_rows([safe_ratio(res[4], phi_m_0) for res in res_comp[:8]])
+    cards += to_8col_rows([safe_ratio(res[5], phi_m_0) for res in res_comp[:8]])
 
     cards += "c CpRFT (phi_p / phi_p0 Tens) (+++5枚目)\n"
-    cards += to_8col_rows([safe_ratio(res[4], phi_m_0) for res in res_tens[:8]])
+    cards += to_8col_rows([safe_ratio(res[5], phi_m_0) for res in res_tens[:8]])
     
     return cards
 
@@ -214,27 +217,39 @@ if st.sidebar.button("解析実行"):
     with st.spinner("極座標メッシュ詳細解析中..."):
         fcc, ecc, r, Ec, kc, fcd, fsyd = get_confined_concrete_props(fck_ui, fsy_ui, D_ui, t_ui, gamma_c, gamma_s, Ec_ui)
         fibers = generate_fibers_polar(D_ui, t_ui)
-        A_s, A_c = sum([f['A'] for f in fibers if f['mat'] == 'steel']), sum([f['A'] for f in fibers if f['mat'] == 'concrete'])
+        eps_syd = fsyd / Es_ui
         
-        Nyc_raw = (A_s * fsyd + kc * A_c * fcc) / 1000.0
-        Nyt_raw = - (A_s * fsyd) / 1000.0
+        # --- 純軸圧縮・純引張のベース耐力を独立計算 ---
+        # 終局 (Np): 全断面が一様に最大ひずみ(ecc)に達した時
+        Nyc_ult = sum([(sigma_steel(ecc, fsyd, Es_ui) if f['mat'] == 'steel' else sigma_concrete(ecc, fcc, ecc, r, 1.0)) * f['A'] for f in fibers]) / 1000.0
+        # 降伏 (Ny): 全断面が一様に鋼管降伏ひずみ(eps_syd)に達した時
+        Nyc_yld = sum([(sigma_steel(eps_syd, fsyd, Es_ui) if f['mat'] == 'steel' else sigma_concrete(eps_syd, fcc, ecc, r, 1.0)) * f['A'] for f in fibers]) / 1000.0
+        
+        # 引張側 (コンクリートは無視されるため終局と降伏は実質同一となる)
+        Nyt_ult = sum([(sigma_steel(-eps_syd, fsyd, Es_ui) if f['mat'] == 'steel' else sigma_concrete(-eps_syd, fcc, ecc, r, 1.0)) * f['A'] for f in fibers]) / 1000.0
+        Nyt_yld = Nyt_ult
         
         axf_list = [0.0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95]
         res_comp, res_tens = [], []
         
         for axf in axf_list:
-            nc = axf * Nyc_raw
-            y_data, m_data = find_points_for_N(nc * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            res_comp.append([nc/gamma_b, y_data[1]/gamma_b, y_data[0], m_data[1]/gamma_b, m_data[0]])
+            # 圧縮側（NyとNpでそれぞれ目標軸力を分離）
+            nc_y = axf * Nyc_yld
+            nc_p = axf * Nyc_ult
+            y_data, _ = find_points_for_N(nc_y * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+            _, m_data = find_points_for_N(nc_p * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+            res_comp.append([nc_y/gamma_b, y_data[1]/gamma_b, y_data[0], nc_p/gamma_b, m_data[1]/gamma_b, m_data[0]])
             
-            nt = axf * Nyt_raw
-            yt_data, mt_data = find_points_for_N(nt * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-            res_tens.append([nt/gamma_b, yt_data[1]/gamma_b, yt_data[0], mt_data[1]/gamma_b, mt_data[0]])
+            # 引張側
+            nt_y = axf * Nyt_yld
+            nt_p = axf * Nyt_ult
+            yt_data, _ = find_points_for_N(nt_y * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+            _, mt_data = find_points_for_N(nt_p * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
+            res_tens.append([nt_y/gamma_b, yt_data[1]/gamma_b, yt_data[0], nt_p/gamma_b, mt_data[1]/gamma_b, mt_data[0]])
         
-        y_cap, m_cap = find_points_for_N(Nyc_raw * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
-        res_comp.append([Nyc_raw/gamma_b, y_cap[1]/gamma_b, y_cap[0], m_cap[1]/gamma_b, m_cap[0]])
-        res_comp.append([Nyc_raw/gamma_b, 0.0, 0.0, 0.0, 0.0]) 
-        res_tens.append([Nyt_raw/gamma_b, 0.0, 0.0, 0.0, 0.0]) 
+        # 純軸点（axf = 1.0, 曲げモーメント=0）を追加
+        res_comp.append([Nyc_yld/gamma_b, 0.0, 0.0, Nyc_ult/gamma_b, 0.0, 0.0]) 
+        res_tens.append([Nyt_yld/gamma_b, 0.0, 0.0, Nyt_ult/gamma_b, 0.0, 0.0]) 
 
         n_tar = target_N_kN * gamma_b * 1000.0
         y_r, m_r = find_points_for_N(n_tar, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
@@ -250,7 +265,7 @@ if st.sidebar.button("解析実行"):
         st.pyplot(f_sec)
         st.markdown("**凡例:** 🟦鋼管(弾) 🟧鋼管(降) | 🟩コンクリート(圧) 🟥コンクリート(終) ⬜引張無視")
         
-        # 📌【追加】N作用時の曲率表示
+        # N作用時の曲率表示
         st.info(f"**【 N = {target_N_kN} kN 作用時の曲率 】**\n"
                 f"- 降伏曲率 $\phi_y$ : **{y_r[0]*1000:.6f}** (1/m)\n"
                 f"- 終局曲率 $\phi_p$ : **{m_r[0]*1000:.6f}** (1/m)")
@@ -266,8 +281,10 @@ if st.sidebar.button("解析実行"):
 
             st.subheader("N-M 相関図 (耐力包絡線)")
             f_nm, ax_nm = plt.subplots()
+            # Ny, My はインデックス 0, 1 を参照
             ax_nm.plot([r[1] for r in all_r], [r[0] for r in all_r], 'bo-', label='Yield Envelope')
-            ax_nm.plot([r[3] for r in all_r], [r[0] for r in all_r], 'ro-', label='Ultimate Envelope')
+            # Np, Mp はインデックス 3, 4 を参照
+            ax_nm.plot([r[4] for r in all_r], [r[3] for r in all_r], 'ro-', label='Ultimate Envelope')
             ax_nm.set_xlabel("Moment (kN・m)"); ax_nm.set_ylabel("Axial Force (kN)"); ax_nm.grid(True); ax_nm.legend(); st.pyplot(f_nm)
 
         with col2:
@@ -280,7 +297,7 @@ if st.sidebar.button("解析実行"):
             df1_data = []
             for r_item in all_r:
                 df1_data.append({
-                    "Mp (kNm)": r_item[3], "Np (kN)": r_item[0],
+                    "Mp (kNm)": r_item[4], "Np (kN)": r_item[3],
                     "My (kNm)": r_item[1], "Ny (kN)": r_item[0]
                 })
             df1 = pd.DataFrame(df1_data)
@@ -289,7 +306,7 @@ if st.sidebar.button("解析実行"):
 
             # テーブル2: 軸力比・曲率比リスト
             phi_y_0 = res_comp[0][2]
-            phi_m_0 = res_comp[0][4]
+            phi_m_0 = res_comp[0][5]
             def safe_ratio(phi, phi_0):
                 return max(phi / phi_0, 0.01) if phi_0 > 0 else 1.0
             
@@ -300,14 +317,14 @@ if st.sidebar.button("解析実行"):
                     "N/Ny": axf,
                     "φy/φy(N=0) (圧縮)": safe_ratio(res_comp[i][2], phi_y_0),
                     "φy/φy(N=0) (引張)": safe_ratio(res_tens[i][2], phi_y_0),
-                    "φp/φp(N=0) (圧縮)": safe_ratio(res_comp[i][4], phi_m_0),
-                    "φp/φp(N=0) (引張)": safe_ratio(res_tens[i][4], phi_m_0)
+                    "φp/φp(N=0) (圧縮)": safe_ratio(res_comp[i][5], phi_m_0),
+                    "φp/φp(N=0) (引張)": safe_ratio(res_tens[i][5], phi_m_0)
                 })
             df2 = pd.DataFrame(df2_data)
             st.markdown("**N/Ny と 曲率比 のリスト表**")
             st.dataframe(df2.style.format("{:.3f}"))
             
-            # 📌【追加】N=0時の基準曲率表示
+            # N=0時の基準曲率表示
             st.info(f"**【 N = 0 kN 時の基準曲率 】**\n"
                     f"- 降伏曲率 $\phi_{{y(N=0)}}$ : **{phi_y_0*1000:.6f}** (1/m)\n"
                     f"- 終局曲率 $\phi_{{p(N=0)}}$ : **{phi_m_0*1000:.6f}** (1/m)")
