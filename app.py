@@ -120,8 +120,30 @@ def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es):
     return Y_pt, M_pt
 
 # ==========================================
-# 4. 可視化・カード生成 （修正版）
+# 4. 可視化・カード生成
 # ==========================================
+def plot_section_state(ax, fibers, eps0, phi, fsyd, ecc, Es, title, D):
+    ax.set_aspect('equal')
+    eps_syd = fsyd / Es
+    for f in fibers:
+        eps_f = eps0 + phi * f['y']
+        if f['mat'] == 'steel':
+            color = 'orange' if abs(eps_f) >= eps_syd else 'royalblue'
+        else:
+            if eps_f >= ecc: color = 'red'
+            elif eps_f > 0: color = 'lightgreen'
+            else: color = 'whitesmoke'
+        wedge = Wedge((0, 0), f['r_end'], f['theta_start']+90, f['theta_end']+90, width=f['r_end']-f['r_start'], facecolor=color, edgecolor='none', alpha=0.7)
+        ax.add_patch(wedge)
+    y_45 = (D/2) * math.cos(math.radians(45))
+    ax.plot([y_45, -y_45], [-y_45, -y_45], 'ro', markersize=5)
+    ax.set_title(title); ax.set_xlim(-D/2-50, D/2+50); ax.set_ylim(-D/2-50, D/2+50); ax.axis('off')
+
+def to_f10(val):
+    if val == 0.0: return "       0.0"
+    s = f"{val:10.2f}" if abs(val) >= 100 else f"{val:10.4f}"
+    return s[:10].rjust(10)
+
 def create_flip_cards(res_comp, res_tens, axf_list):
     all_res = res_comp[::-1] + res_tens[1:]
     n = len(all_res)
@@ -130,7 +152,6 @@ def create_flip_cards(res_comp, res_tens, axf_list):
     cards += "c RNNY(N), RMMP(Mp)\n"
     for i in range(0, n, 4):
         cards += "".join([to_f10(all_res[i+j][0]) + to_f10(all_res[i+j][3]) for j in range(4) if i+j < n]) + "\n"
-    
     cards += "c RNMY(N), RMMY(My)\n"
     for i in range(0, n, 4):
         cards += "".join([to_f10(all_res[i+j][0]) + to_f10(all_res[i+j][1]) for j in range(4) if i+j < n]) + "\n"
@@ -148,7 +169,6 @@ def create_flip_cards(res_comp, res_tens, axf_list):
             res += "".join([to_f10(x) for x in padded[i:i+8]]) + "\n"
         return res
 
-    # 【修正箇所】リストのスライス [:8] を適用して要素数を8個に制限
     cards += "c AXF Ratio (+++1枚目)\n"
     cards += to_8col_rows(axf_list[:8])
 
