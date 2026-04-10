@@ -249,6 +249,11 @@ if st.sidebar.button("解析実行"):
         plot_section_state(ax_m, fibers, m_r[2], m_r[0], fsyd, ecc, Es_ui, f"Ultimate State (Mm={m_r[1]:,.0f})", D_ui)
         st.pyplot(f_sec)
         st.markdown("**凡例:** 🟦鋼管(弾) 🟧鋼管(降) | 🟩コンクリート(圧) 🟥コンクリート(終) ⬜引張無視")
+        
+        # 📌【追加】N作用時の曲率表示
+        st.info(f"**【 N = {target_N_kN} kN 作用時の曲率 】**\n"
+                f"- 降伏曲率 $\phi_y$ : **{y_r[0]*1000:.6f}** (1/m)\n"
+                f"- 終局曲率 $\phi_p$ : **{m_r[0]*1000:.6f}** (1/m)")
 
         col1, col2 = st.columns([1.2, 1])
         with col1:
@@ -269,7 +274,6 @@ if st.sidebar.button("解析実行"):
             st.subheader("FLIP入力データ (IAX系カード)")
             st.text_area("Copy content below", value=create_flip_cards(res_comp, res_tens, axf_list+[1.0]), height=400)
             
-            # --- ここから新規追加: テーブル出力 ---
             st.subheader("算出値データテーブル")
             
             # テーブル1: M-Nリスト
@@ -302,3 +306,8 @@ if st.sidebar.button("解析実行"):
             df2 = pd.DataFrame(df2_data)
             st.markdown("**N/Ny と 曲率比 のリスト表**")
             st.dataframe(df2.style.format("{:.3f}"))
+            
+            # 📌【追加】N=0時の基準曲率表示
+            st.info(f"**【 N = 0 kN 時の基準曲率 】**\n"
+                    f"- 降伏曲率 $\phi_{{y(N=0)}}$ : **{phi_y_0*1000:.6f}** (1/m)\n"
+                    f"- 終局曲率 $\phi_{{p(N=0)}}$ : **{phi_m_0*1000:.6f}** (1/m)")
