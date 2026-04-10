@@ -17,33 +17,33 @@ if password != "cft":
 # 1. 材料モデル関数
 # ==========================================
 def get_confined_concrete_props(fck, fsy, D, t, gamma_c, gamma_s, Ec):
-    # 設計強度の算定 [cite: 557, 564]
+    # 設計強度の算定
     fcd = fck / gamma_c
     fsyd = fsy / gamma_s
     
     alpha = 1.0
-    # 鋼管による拘束応力度 [cite: 566, 581]
+    # 鋼管による拘束応力度
     f1 = 2 * t * alpha * fsyd / (D - 2 * t)
-    # 拘束コンクリートの最大圧縮強度 [cite: 566, 597]
+    # 拘束コンクリートの最大圧縮強度
     fcc = fcd * (2.254 * np.sqrt(1 + 7.94 * f1 / fck) - 2 * f1 / fck - 1.254)
-    # 最大圧縮強度時のひずみ [cite: 567, 585]
+    # 最大圧縮強度時のひずみ
     ecc = 0.002 * (1 + 5 * (fcc / fcd - 1))
     
     Esec = fcc / ecc
     r = Ec / (Ec - Esec)
     
-    # 軸圧縮耐力用低減係数 kc [cite: 599]
+    # 軸圧縮耐力用低減係数 (標準18MPaで0.85)
     kc = max(0.85, 1.0 - 0.003 * fck)
     return fcc, ecc, r, Ec, kc, fcd, fsyd
 
 def sigma_concrete(eps, fcc, ecc, r, kc_val):
     if eps <= 0: return 0.0 
     x = eps / ecc
-    # 崎野・孫モデルの応力度ひずみ曲線 [cite: 594, 607]
+    # 崎野・孫モデルの応力度ひずみ曲線
     return kc_val * (fcc * x * r) / (r - 1 + x**r)
 
 def sigma_steel(eps, fsyd, Es):
-    # 鋼材のバイリニア特性 (硬化勾配 Es/100) [cite: 552, 634]
+    # 鋼材のバイリニア特性 (硬化勾配 Es/100)
     eps_syd = fsyd / Es
     if abs(eps) <= eps_syd:
         return Es * eps
@@ -60,7 +60,7 @@ def generate_fibers_polar(D, t, n_r_conc=36, n_r_steel=5, n_theta=36):
     r_in = (D - 2 * t) / 2.0
     r_out = D / 2.0
     
-    # コンクリート部 (36 x 36 = 1296要素) [cite: 201]
+    # コンクリート部 (36 x 36 = 1296要素)
     dr_c = r_in / n_r_conc
     for i in range(n_r_conc):
         r_start, r_end = i * dr_c, (i + 1) * dr_c
@@ -106,7 +106,7 @@ def analyze_section(phi, target_N, fibers, fsyd, fcc, ecc, r, Es):
 
 def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es):
     eps_syd = fsyd / Es
-    y_45deg = - (D/2) * math.cos(math.radians(45)) # 降伏判定点 [cite: 656]
+    y_45deg = - (D/2) * math.cos(math.radians(45)) # 降伏判定点
     y_comp_edge = (D/2) - t
     phis = np.linspace(0, 0.15/D, 350)
     
@@ -119,10 +119,10 @@ def find_points_for_N(target_N_N, fibers, fsyd, fcc, ecc, r, D, t, Es):
         eps0, M = res
         if M > max_M: max_M, phi_max_M, eps0_max_M = M, phi, eps0
         
-        # 降伏点判定 (45度位置) [cite: 652]
+        # 降伏点判定 (45度位置)
         if not found_Y and phi > 0 and abs(eps0 + phi * y_45deg) >= eps_syd:
             Y_pt = (phi, M, eps0); found_Y = True
-        # 終局点判定 (コンクリート縁ひずみ到達) [cite: 653, 674]
+        # 終局点判定 (コンクリート縁ひずみ到達)
         if not found_M and phi > 0 and (eps0 + phi * y_comp_edge >= ecc):
             M_pt = (phi, M, eps0); found_M = True; break
             
@@ -151,19 +151,53 @@ def plot_section_state(ax, fibers, eps0, phi, fsyd, ecc, Es, title, D):
     ax.set_title(title); ax.set_xlim(-D/2-50, D/2+50); ax.set_ylim(-D/2-50, D/2+50); ax.axis('off')
 
 def to_f10(val):
-    return (f"{val:10.2f}" if abs(val) >= 100 else f"{val:10.4f}").rjust(10)
+    if val == 0.0: return "       0.0"
+    s = f"{val:10.2f}" if abs(val) >= 100 else f"{val:10.4f}"
+    return s[:10].rjust(10)
 
 def create_flip_cards(res_comp, res_tens, axf_list):
     all_res = res_comp[::-1] + res_tens[1:]
     n = len(all_res)
     cards = f"c --- IAX = 2{n:02d} (非対称モデル {n}点) ---\n"
+    
+    # 耐力曲線の出力
     cards += "c RNNY(N), RMMP(Mp)\n"
     for i in range(0, n, 4):
         cards += "".join([to_f10(all_res[i+j][0]) + to_f10(all_res[i+j][3]) for j in range(4) if i+j < n]) + "\n"
     cards += "c RNMY(N), RMMY(My)\n"
     for i in range(0, n, 4):
         cards += "".join([to_f10(all_res[i+j][0]) + to_f10(all_res[i+j][1]) for j in range(4) if i+j < n]) + "\n"
-    cards += "c AXF Ratio\n" + "".join([to_f10(x) for x in (axf_list + [0.0]*8)[:8]]) + "\n"
+        
+    # --- 曲率比(CyRFC等)の出力ブロック復旧・改良 ---
+    def safe_ratio(phi, phi_0):
+        return max(phi / phi_0, 0.01) if phi_0 > 0 else 1.0
+
+    phi_y_0 = res_comp[0][2]
+    phi_m_0 = res_comp[0][4]
+
+    # 要素数が8を超えても自動で8カラムごとに改行する汎用フォーマッター
+    def to_8col_rows(vals):
+        padded = vals + [0.0] * ((8 - len(vals) % 8) % 8)
+        res = ""
+        for i in range(0, len(padded), 8):
+            res += "".join([to_f10(x) for x in padded[i:i+8]]) + "\n"
+        return res
+
+    cards += "c AXF Ratio\n"
+    cards += to_8col_rows(axf_list)
+
+    cards += "c CyRFC (phi_y / phi_y0 Comp)\n"
+    cards += to_8col_rows([safe_ratio(res[2], phi_y_0) for res in res_comp])
+
+    cards += "c CyRFT (phi_y / phi_y0 Tens)\n"
+    cards += to_8col_rows([safe_ratio(res[2], phi_y_0) for res in res_tens])
+
+    cards += "c CpRFC (phi_p / phi_p0 Comp)\n"
+    cards += to_8col_rows([safe_ratio(res[4], phi_m_0) for res in res_comp])
+
+    cards += "c CpRFT (phi_p / phi_p0 Tens)\n"
+    cards += to_8col_rows([safe_ratio(res[4], phi_m_0) for res in res_tens])
+    
     return cards
 
 # ==========================================
@@ -183,8 +217,8 @@ Es_ui = st.sidebar.number_input("鋼材ヤング係数 Es (N/mm2)", value=205000
 Ec_ui = st.sidebar.number_input("コンクリートヤング係数 Ec (N/mm2)", value=22000.0)
 
 st.sidebar.header("3. 安全係数")
-gamma_s = st.sidebar.number_input("鋼材材料係数 γs", value=1.05) # [cite: 578]
-gamma_c = st.sidebar.number_input("コンクリート材料係数 γc", value=1.30) # [cite: 570]
+gamma_s = st.sidebar.number_input("鋼材材料係数 γs", value=1.05)
+gamma_c = st.sidebar.number_input("コンクリート材料係数 γc", value=1.30)
 gamma_b = st.sidebar.number_input("部材係数 γb", value=1.00)
 
 st.sidebar.header("4. 作用外力")
@@ -214,7 +248,7 @@ if st.sidebar.button("解析実行"):
             yt_data, mt_data = find_points_for_N(nt * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
             res_tens.append([nt/gamma_b, yt_data[1]/gamma_b, yt_data[0], mt_data[1]/gamma_b, mt_data[0]])
         
-        # 水平キャップ処理 (イメージ図の再現)
+        # 水平キャップ処理
         y_cap, m_cap = find_points_for_N(Nyc_raw * 1000, fibers, fsyd, fcc, ecc, r, D_ui, t_ui, Es_ui)
         res_comp.append([Nyc_raw/gamma_b, y_cap[1]/gamma_b, y_cap[0], m_cap[1]/gamma_b, m_cap[0]])
         res_comp.append([Nyc_raw/gamma_b, 0.0, 0.0, 0.0, 0.0]) # 軸力上限かつモーメント0
@@ -239,8 +273,8 @@ if st.sidebar.button("解析実行"):
             st.subheader("M-φ 曲線 (1/m)")
             f_mp, ax_mp = plt.subplots()
             ax_mp.plot([p*1000 for p in phis_p], [m/gamma_b for m in m_curve], 'k-')
-            ax_mp.plot(y_r[0]*1000, y_r[1]/gamma_b, 'bo', label='Yield')
-            ax_mp.plot(m_r[0]*1000, m_r[1]/gamma_b, 'ro', label='Ultimate')
+            ax_mp.plot(y_r[0]*1000, y_r[1]/gamma_b, 'bo', label='Yield Envelope')
+            ax_mp.plot(m_r[0]*1000, m_r[1]/gamma_b, 'ro', label='Ultimate Envelope')
             ax_mp.set_xlabel("Curvature (1/m)"); ax_mp.set_ylabel("Moment (kN・m)"); ax_mp.grid(True); st.pyplot(f_mp)
             st.info(f"**Yield**: My={y_r[1]/gamma_b:,.1f} kNm, φy={y_r[0]*1000:.5f} | **Ultimate**: Mm={m_r[1]/gamma_b:,.1f} kNm, φm={m_r[0]*1000:.5f}")
 
