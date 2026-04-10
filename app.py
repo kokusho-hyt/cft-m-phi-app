@@ -48,7 +48,7 @@ def sigma_steel(eps, fsyd, Es):
 # ==========================================
 # 2. ファイバー断面の生成 (ES同期: 36x36分割)
 # ==========================================
-def generate_fibers_polar(D, t, n_r_conc=36, n_r_steel=5, n_theta=36):
+def generate_fibers_polar(D, t, n_r_conc=36, n_r_steel=2, n_theta=18):
     fibers = []
     d_theta = 360.0 / n_theta
     r_in = (D - 2 * t) / 2.0
